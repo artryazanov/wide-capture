@@ -30,8 +30,9 @@ namespace Graphics {
         
         ComPtr<ID3D11ComputeShader> projectionShader;
         
-        UINT width = 0;
-        UINT height = 0;
+        UINT gameWidth = 0;
+        UINT gameHeight = 0;
+        UINT faceSize = 0; // Square face size
         DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
         int currentFace = 0;
         bool isInitialized = false;
@@ -64,16 +65,21 @@ namespace Graphics {
 
     bool InitResources(CubemapManager* self, UINT w, UINT h, DXGI_FORMAT format) {
         auto& impl = self->m_impl;
-        impl->width = w;
-        impl->height = h;
-        impl->format = format; // Store the format
+        impl->gameWidth = w;
+        impl->gameHeight = h;
+        impl->format = format; 
+
+        // 1. Determine Face Size (Must be SQUARE)
+        // Use min dimension to crop center square
+        impl->faceSize = std::min(w, h);
+        
+        LOG_INFO("Init Resources. Game: ", w, "x", h, " -> Face Size: ", impl->faceSize, "x", impl->faceSize);
 
         DX11Proxy proxy(self->m_device.Get(), self->m_context.Get());
 
-        // 1. Create Face Textures
-        // Use the game's backbuffer format for compatibility (e.g. SRGB or BGR)
+        // 2. Create Face Textures (Square)
         for(int i=0; i<6; ++i) {
-            if (!proxy.CreateTexture2D(w, h, format, D3D11_BIND_SHADER_RESOURCE, impl->faceTextures[i].GetAddressOf())) return false;
+            if (!proxy.CreateTexture2D(impl->faceSize, impl->faceSize, format, D3D11_BIND_SHADER_RESOURCE, impl->faceTextures[i].GetAddressOf())) return false;
             self->m_device->CreateShaderResourceView(impl->faceTextures[i].Get(), nullptr, impl->faceSRVs[i].GetAddressOf());
         }
 
@@ -83,8 +89,8 @@ namespace Graphics {
         // Spec shader: TextureCube<float4> g_InputCubemap
         
         D3D11_TEXTURE2D_DESC desc = {};
-        desc.Width = w;
-        desc.Height = h;
+        desc.Width = impl->faceSize;
+        desc.Height = impl->faceSize;
         desc.MipLevels = 1;
         desc.ArraySize = 6;
         desc.Format = format;
@@ -97,13 +103,11 @@ namespace Graphics {
         if (FAILED(self->m_device->CreateShaderResourceView(impl->cubeTexture.Get(), nullptr, impl->cubeSRV.GetAddressOf()))) return false;
 
         // 3. Equirectangular Output (UAV)
-        // Width = 4 * Height (roughly, or 2*Pi*R vs Pi*R). Usually 2:1 aspect ratio.
-        // If Face is WxH, Sphere is roughly 4*W x 2*W?
-        // Standard: 4096x2048 for 4K.
-        // 3. Equirectangular Output (UAV)
-        // Adjust resolution: Clamp to Max 4096 width (4K) to stay within safe H.264 levels
-        // Typical equirectangular is 2:1 aspect ratio.
-        UINT eqW = std::min<UINT>(w * 4, 4096); 
+        // Resolution based on Face Size
+        // Clamp to Max 4096 width (4K)
+        UINT eqW = impl->faceSize * 4;
+        if (eqW > 4096) eqW = 4096;
+        
         UINT eqH = eqW / 2;
         
         // Align to 16 for video encoding safety
@@ -154,15 +158,23 @@ namespace Graphics {
         }
         
         // Handle Resize or Format Change (simple check based on width/height for now, ideally check format too)
-        if (desc.Width != m_impl->width || desc.Height != m_impl->height) {
+        // Handle Resize
+        if (desc.Width != m_impl->gameWidth || desc.Height != m_impl->gameHeight) {
             OnResize();
             return;
         }
 
-        // 1. Copy BackBuffer to Current Face
-        // Use CopySubresourceRegion for safety if formats match. 
-        // If InitResources used desc.Format, they match.
-        m_context->CopySubresourceRegion(m_impl->faceTextures[m_impl->currentFace].Get(), 0, 0, 0, 0, backBuffer.Get(), 0, nullptr);
+        // 1. Copy BackBuffer to Current Face (CENTER CROP)
+        // Copy regions faceSize x faceSize from center
+        D3D11_BOX srcBox;
+        srcBox.left = (desc.Width - m_impl->faceSize) / 2;
+        srcBox.top = (desc.Height - m_impl->faceSize) / 2;
+        srcBox.front = 0;
+        srcBox.right = srcBox.left + m_impl->faceSize;
+        srcBox.bottom = srcBox.top + m_impl->faceSize;
+        srcBox.back = 1;
+
+        m_context->CopySubresourceRegion(m_impl->faceTextures[m_impl->currentFace].Get(), 0, 0, 0, 0, backBuffer.Get(), 0, &srcBox);
 
         // 2. Prepare for NEXT frame camera
         m_impl->currentFace++;
