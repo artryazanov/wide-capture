@@ -23,7 +23,7 @@ namespace Graphics {
         // Accessor needed for Hooks
         Camera::CameraController* GetCameraController();
 
-        friend bool InitResources(CubemapManager* self, UINT w, UINT h);
+        friend bool InitResources(CubemapManager* self, UINT w, UINT h, DXGI_FORMAT format);
 
     private:
         ComPtr<ID3D11Device> m_device;

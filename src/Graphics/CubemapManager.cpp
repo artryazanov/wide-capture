@@ -31,6 +31,7 @@ namespace Graphics {
         
         UINT width = 0;
         UINT height = 0;
+        DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
         int currentFace = 0;
         bool isInitialized = false;
     };
@@ -60,16 +61,18 @@ namespace Graphics {
         return m_impl ? m_impl->cameraController.get() : nullptr;
     }
 
-    bool InitResources(CubemapManager* self, UINT w, UINT h) {
+    bool InitResources(CubemapManager* self, UINT w, UINT h, DXGI_FORMAT format) {
         auto& impl = self->m_impl;
         impl->width = w;
         impl->height = h;
+        impl->format = format; // Store the format
 
         DX11Proxy proxy(self->m_device.Get(), self->m_context.Get());
 
-        // 1. Create Face Textures (R8G8B8A8)
+        // 1. Create Face Textures
+        // Use the game's backbuffer format for compatibility (e.g. SRGB or BGR)
         for(int i=0; i<6; ++i) {
-            if (!proxy.CreateTexture2D(w, h, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE, impl->faceTextures[i].GetAddressOf())) return false;
+            if (!proxy.CreateTexture2D(w, h, format, D3D11_BIND_SHADER_RESOURCE, impl->faceTextures[i].GetAddressOf())) return false;
             self->m_device->CreateShaderResourceView(impl->faceTextures[i].Get(), nullptr, impl->faceSRVs[i].GetAddressOf());
         }
 
@@ -83,7 +86,7 @@ namespace Graphics {
         desc.Height = h;
         desc.MipLevels = 1;
         desc.ArraySize = 6;
-        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.Format = format;
         desc.SampleDesc.Count = 1;
         desc.Usage = D3D11_USAGE_DEFAULT;
         desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -134,20 +137,22 @@ namespace Graphics {
         backBuffer->GetDesc(&desc);
 
         if (!m_impl->isInitialized) {
-            if (!InitResources(this, desc.Width, desc.Height)) {
+            if (!InitResources(this, desc.Width, desc.Height, desc.Format)) {
                 m_isRecording = false; // Stop if init fails
                 return;
             }
         }
         
-        // Handle Resize
+        // Handle Resize or Format Change (simple check based on width/height for now, ideally check format too)
         if (desc.Width != m_impl->width || desc.Height != m_impl->height) {
             OnResize();
             return;
         }
 
         // 1. Copy BackBuffer to Current Face
-        m_context->CopyResource(m_impl->faceTextures[m_impl->currentFace].Get(), backBuffer.Get());
+        // Use CopySubresourceRegion for safety if formats match. 
+        // If InitResources used desc.Format, they match.
+        m_context->CopySubresourceRegion(m_impl->faceTextures[m_impl->currentFace].Get(), 0, 0, 0, 0, backBuffer.Get(), 0, nullptr);
 
         // 2. Prepare for NEXT frame camera
         m_impl->currentFace++;

@@ -99,8 +99,11 @@ namespace Graphics {
         ID3D11UnorderedAccessView* csuavs[D3D11_1_UAV_SLOT_COUNT];
         for(int i=0; i<D3D11_1_UAV_SLOT_COUNT; ++i) csuavs[i] = m_csUAVs[i].Get();
         // Careful with UAVs, we often set them via CSSetUnorderedAccessViews but with initial counts
-        UINT initialCounts[D3D11_1_UAV_SLOT_COUNT] = { (UINT)-1 }; // Keep current counters
-        m_context->CSSetUnorderedAccessViews(0, D3D11_1_UAV_SLOT_COUNT, csuavs, nullptr); // nullptr means maintain counters usually, or use previous. Actually there is no easy "maintain", we just set.
+        // Create an array initialized to -1 (keep counters)
+        UINT initialCounts[D3D11_1_UAV_SLOT_COUNT];
+        for(int i=0; i<D3D11_1_UAV_SLOT_COUNT; ++i) initialCounts[i] = (UINT)-1;
+        
+        m_context->CSSetUnorderedAccessViews(0, D3D11_1_UAV_SLOT_COUNT, csuavs, initialCounts);
         
         ID3D11SamplerState* cssamplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT];
         for(int i=0; i<D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++i) cssamplers[i] = m_csSamplers[i].Get();
