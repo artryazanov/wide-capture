@@ -50,6 +50,7 @@ void CaptureThread(HMODULE hModule) {
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH:
+        MessageBoxA(NULL, "Full DLL Attached! Testing...", "WideCapture Debug", MB_OK);
         DisableThreadLibraryCalls(hModule);
         CreateThread(nullptr, 0, (LPTHREAD_START_ROUTINE)CaptureThread, hModule, 0, nullptr);
         break;

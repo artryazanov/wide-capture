@@ -30,7 +30,7 @@ namespace Camera {
         
         // Cache needed to avoid analyzing every buffer every frame
         ID3D11Buffer* m_cachedCameraBuffer = nullptr;
-        UINT m_cachedSlot = -1;
+        UINT m_cachedSlot = (UINT)-1;
 
         DirectX::XMMATRIX GetViewMatrixForFace(DirectX::XMMATRIX originalView, CubeFace face);
         DirectX::XMMATRIX GetProjectionMatrix90FOV(DirectX::XMMATRIX originalProj);

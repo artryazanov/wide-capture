@@ -11,6 +11,25 @@ PAGE_READWRITE = 0x04
 def inject(pid, dll_path):
     kernel32 = windll.kernel32
     
+    # Define return types for 64-bit compatibility
+    kernel32.VirtualAllocEx.argtypes = [c_void_p, c_void_p, c_size_t, c_uint32, c_uint32]
+    kernel32.VirtualAllocEx.restype = c_void_p
+    
+    kernel32.GetModuleHandleW.argtypes = [c_wchar_p]
+    kernel32.GetModuleHandleW.restype = c_void_p
+    
+    kernel32.GetProcAddress.argtypes = [c_void_p, c_char_p]
+    kernel32.GetProcAddress.restype = c_void_p
+    
+    kernel32.CreateRemoteThread.argtypes = [c_void_p, c_void_p, c_size_t, c_void_p, c_void_p, c_uint32, POINTER(c_ulong)]
+    kernel32.CreateRemoteThread.restype = c_void_p
+
+    kernel32.OpenProcess.argtypes = [c_uint32, c_bool, c_uint32]
+    kernel32.OpenProcess.restype = c_void_p
+
+    kernel32.WriteProcessMemory.argtypes = [c_void_p, c_void_p, c_void_p, c_size_t, POINTER(c_size_t)]
+    kernel32.WriteProcessMemory.restype = c_bool
+
     # Open target process
     h_process = kernel32.OpenProcess(PROCESS_ALL_ACCESS, False, pid)
     if not h_process:
@@ -22,8 +41,10 @@ def inject(pid, dll_path):
     arg_address = kernel32.VirtualAllocEx(h_process, 0, len(dll_path_bytes) + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
     
     # Write DLL path
-    written = c_int(0)
-    kernel32.WriteProcessMemory(h_process, arg_address, dll_path_bytes, len(dll_path_bytes), byref(written))
+    written = c_size_t(0)
+    if not kernel32.WriteProcessMemory(h_process, arg_address, dll_path_bytes, len(dll_path_bytes), byref(written)):
+        print("Failed to write memory")
+        return False
 
     # Create remote thread to load library
     h_kernel32 = kernel32.GetModuleHandleW(u"kernel32.dll")

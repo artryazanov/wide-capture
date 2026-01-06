@@ -1,6 +1,7 @@
 #pragma once
 #include <d3d11.h>
 #include <dxgi.h>
+#include <mutex>
 
 namespace Core {
     // Function pointer types
@@ -31,5 +32,6 @@ namespace Core {
         static ID3D11DeviceContext_VSSetConstantBuffers_t oVSSetConstantBuffers;
         
         static bool m_isInitialized;
+        static std::mutex m_mutex;
     };
 }

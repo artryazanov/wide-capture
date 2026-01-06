@@ -1,5 +1,8 @@
 #include "pch.h"
 #include "Hooks.h"
+#include <atomic>
+
+extern std::atomic<bool> g_IsRunning;
 #include "MinHook.h" 
 #include "../Graphics/CubemapManager.h"
 #include "../Camera/CameraController.h"
@@ -11,6 +14,7 @@ namespace Core {
     ID3D11DeviceContext_VSSetConstantBuffers_t Hooks::oVSSetConstantBuffers = nullptr;
     
     bool Hooks::m_isInitialized = false;
+    std::mutex Hooks::m_mutex;
 
     static std::unique_ptr<Graphics::CubemapManager> g_CubemapManager;
 
@@ -111,14 +115,12 @@ namespace Core {
         
         // Hook VSSetConstantBuffers (Index 8)
         // DIAGNOSTIC DISABLE: Suspected crash source
-        /*
         if (MH_CreateHook(pContextVTable[8], reinterpret_cast<LPVOID>(&Hook_VSSetConstantBuffers), reinterpret_cast<void**>(&oVSSetConstantBuffers)) != MH_OK) {
-            LOG_ERROR("Failed to hook VSSetConstantBuffers");
-            // Resources released by ComPtr destructors
-            DestroyWindow(hWnd);
-            return false;
+             LOG_ERROR("Failed to hook VSSetConstantBuffers");
+             // Resources released by ComPtr destructors
+             DestroyWindow(hWnd);
+             return false;
         }
-        */
 
         // Resources released by ComPtr destructors
         DestroyWindow(hWnd);
@@ -127,6 +129,7 @@ namespace Core {
     }
 
     void Hooks::Uninstall() {
+        std::lock_guard<std::mutex> lock(m_mutex);
         if (m_isInitialized) {
             g_CubemapManager.reset();
             m_isInitialized = false;
@@ -136,24 +139,33 @@ namespace Core {
     }
 
     HRESULT __stdcall Hooks::Hook_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
-        if (!m_isInitialized) {
-            Microsoft::WRL::ComPtr<ID3D11Device> device;
-            Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
-            
-            if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D11Device), (void**)device.GetAddressOf()))) {
-                device->GetImmediateContext(context.GetAddressOf());
-                
-                // CubemapManager now uses ComPtrs internally, so it will add its own refs.
-                // We pass raw pointers, and it will wrap them safely.
-                g_CubemapManager = std::make_unique<Graphics::CubemapManager>(device.Get(), context.Get());
-                
-                m_isInitialized = true;
-                LOG_INFO("DirectX 11 Context Initialized.");
-            }
-        }
+        if (!g_IsRunning) return oPresent(pSwapChain, SyncInterval, Flags);
 
-        if (g_CubemapManager && g_CubemapManager->IsRecording()) {
-            g_CubemapManager->ExecuteCaptureCycle(pSwapChain);
+        std::lock_guard<std::mutex> lock(m_mutex);
+        try {
+            if (!m_isInitialized) {
+                Microsoft::WRL::ComPtr<ID3D11Device> device;
+                Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
+                
+                if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D11Device), (void**)device.GetAddressOf()))) {
+                    device->GetImmediateContext(context.GetAddressOf());
+                    
+                    // CubemapManager now uses ComPtrs internally, so it will add its own refs.
+                    // We pass raw pointers, and it will wrap them safely.
+                    g_CubemapManager = std::make_unique<Graphics::CubemapManager>(device.Get(), context.Get());
+                    
+                    m_isInitialized = true;
+                    LOG_INFO("DirectX 11 Context Initialized.");
+                }
+            }
+
+            if (g_CubemapManager && g_CubemapManager->IsRecording()) {
+                g_CubemapManager->ExecuteCaptureCycle(pSwapChain);
+            }
+        } catch (const std::exception& e) {
+             LOG_ERROR("Exception in Hook_Present: ", e.what());
+        } catch (...) {
+             LOG_ERROR("Unknown Exception in Hook_Present");
         }
 
         return oPresent(pSwapChain, SyncInterval, Flags);
@@ -167,17 +179,35 @@ namespace Core {
     }
 
     void __stdcall Hooks::Hook_VSSetConstantBuffers(ID3D11DeviceContext* pContext, UINT StartSlot, UINT NumBuffers, ID3D11Buffer* const* ppConstantBuffers) {
+        // Safe check for shutdown
+        if (!g_IsRunning) {
+             if (oVSSetConstantBuffers) oVSSetConstantBuffers(pContext, StartSlot, NumBuffers, ppConstantBuffers);
+             return;
+        }
+
         // Intercept logic
-        if (g_CubemapManager && g_CubemapManager->IsRecording() && ppConstantBuffers) {
-            Camera::CameraController* camCtrl = g_CubemapManager->GetCameraController();
-            if (camCtrl) {
-                // Check buffers safely
-                for (UINT i = 0; i < NumBuffers; ++i) {
-                    if (ppConstantBuffers[i]) { // Null check per buffer
-                         camCtrl->CheckAndModifyConstantBuffer(StartSlot + i, ppConstantBuffers[i]);
+        // We use try_lock to avoid stalling the render thread heavily if uninstallation is happening or Present is busy (though Present shouldn't block this long)
+        // Actually, VSSetConstantBuffers is very frequent. Blocking it might kill perf.
+        // We can just check pointer validity atomic-ish or risks.
+        // But for safety against crash during Uninstall, we need some guard.
+        
+        std::unique_lock<std::mutex> lock(m_mutex, std::try_to_lock);
+        if (lock.owns_lock()) {
+             try {
+                if (g_CubemapManager && g_CubemapManager->IsRecording() && ppConstantBuffers) {
+                    Camera::CameraController* camCtrl = g_CubemapManager->GetCameraController();
+                    if (camCtrl) {
+                        // Check buffers safely
+                        for (UINT i = 0; i < NumBuffers; ++i) {
+                            if (ppConstantBuffers[i]) { // Null check per buffer
+                                 camCtrl->CheckAndModifyConstantBuffer(StartSlot + i, ppConstantBuffers[i]);
+                            }
+                        }
                     }
                 }
-            }
+             } catch (...) {
+                 // Swallow exceptions in high-freq hook
+             }
         }
         
         if (oVSSetConstantBuffers) {

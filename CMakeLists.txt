@@ -66,8 +66,6 @@ set(HEADERS
 
 add_library(${PROJECT_NAME} SHARED ${SOURCES} ${HEADERS})
 
-# target_precompile_headers(${PROJECT_NAME} PRIVATE src/pch.h)
-
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
     minhook

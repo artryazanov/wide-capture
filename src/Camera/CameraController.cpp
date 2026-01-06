@@ -8,7 +8,7 @@ namespace Camera {
 
     void CameraController::Reset() {
         m_cachedCameraBuffer = nullptr;
-        m_cachedSlot = -1;
+        m_cachedSlot = (UINT)-1;
     }
 
     void CameraController::SetTargetFace(CubeFace face) {
