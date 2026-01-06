@@ -118,7 +118,7 @@ namespace Graphics {
         // If Game is 60fps, Video is 10fps. Bad.
         // Assuming we want 60fps video -> Game must range 360fps.
         // Or we record at whatever rate we get.
-        if (!impl->encoder->Initialize(self->m_device.Get(), eqW, eqH, 60, "record_360.mp4")) return false;
+        if (!impl->encoder->Initialize(self->m_device.Get(), eqW, eqH, 60, "C:/Videos/record_360.mp4")) return false;
 
         impl->isInitialized = true;
         return true;

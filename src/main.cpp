@@ -5,14 +5,17 @@
 // Global atomic flag for thread cycle control
 std::atomic<bool> g_IsRunning{ true };
 
+// Global Hooks instance to ensure lifetime control
+static std::unique_ptr<Core::Hooks> g_Hooks;
+
 void CaptureThread(HMODULE hModule) {
     Logger::Init();
     LOG_INFO("WideCapture injected successfully. Thread ID: ", GetCurrentThreadId());
 
     try {
         // Init Hooks
-        Core::Hooks hooks;
-        if (!hooks.Install()) {
+        g_Hooks = std::make_unique<Core::Hooks>();
+        if (!g_Hooks->Install()) {
             LOG_ERROR("Failed to install hooks. Aborting.");
             g_IsRunning = false;
         } else {
@@ -27,7 +30,10 @@ void CaptureThread(HMODULE hModule) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
 
-        hooks.Uninstall();
+        if (g_Hooks) {
+            g_Hooks->Uninstall();
+            g_Hooks.reset();
+        }
     }
     catch (const std::exception& e) {
         LOG_ERROR("Critical error in CaptureThread: ", e.what());
