@@ -51,10 +51,16 @@ namespace Video {
 
         AVHWFramesContext* framesCtx = (AVHWFramesContext*)m_hwFramesRef->data;
         framesCtx->format = AV_PIX_FMT_D3D11;   
-        framesCtx->sw_format = AV_PIX_FMT_RGBA; // Match DXGI_FORMAT_R8G8B8A8_UNORM
+        framesCtx->sw_format = AV_PIX_FMT_NV12; // Match DXGI_FORMAT_NV12
         framesCtx->width = m_width;
         framesCtx->height = m_height;
         framesCtx->initial_pool_size = 20; // Ensure pool is allocated for CopyResource workflow
+
+        // Explicitly set BindFlags to what we know works (BIND_RENDER_TARGET | BIND_SHADER_RESOURCE)
+        // Failure 80070057 (E_INVALIDARG) suggests default flags (often BIND_DECODER) might be rejected for NV12 or by driver.
+        AVD3D11VAFramesContext* framesHwCtx = (AVD3D11VAFramesContext*)framesCtx->hwctx;
+        framesHwCtx->BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        framesHwCtx->MiscFlags = 0;
 
         if (av_hwframe_ctx_init(m_hwFramesRef) < 0) throw std::runtime_error("Failed to init HW frames ctx");
     }

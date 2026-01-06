@@ -27,7 +27,18 @@ namespace Graphics {
         
         ComPtr<ID3D11Texture2D> equirectTexture;
         ComPtr<ID3D11UnorderedAccessView> equirectUAV;
+        ComPtr<ID3D11ShaderResourceView> equirectSRV; // Source for conversion
+
+        // NV12 Conversion
+        ComPtr<ID3D11Texture2D> equirectNV12;
+        ComPtr<ID3D11RenderTargetView> nv12Y_RTV;
+        ComPtr<ID3D11RenderTargetView> nv12UV_RTV;
         
+        ComPtr<ID3D11VertexShader> convertVS;
+        ComPtr<ID3D11PixelShader> convertPS_Y;
+        ComPtr<ID3D11PixelShader> convertPS_UV;
+        ComPtr<ID3D11SamplerState> linearSampler;
+
         ComPtr<ID3D11ComputeShader> projectionShader;
         
         UINT gameWidth = 0;
@@ -118,6 +129,29 @@ namespace Graphics {
         
         if (!proxy.CreateTexture2D(eqW, eqH, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET, impl->equirectTexture.GetAddressOf())) return false;
         if (FAILED(self->m_device->CreateUnorderedAccessView(impl->equirectTexture.Get(), nullptr, impl->equirectUAV.GetAddressOf()))) return false;
+        if (FAILED(self->m_device->CreateShaderResourceView(impl->equirectTexture.Get(), nullptr, impl->equirectSRV.GetAddressOf()))) return false;
+
+        // 3b. NV12 Output & RTVs
+        if (!proxy.CreateTexture2D(eqW, eqH, DXGI_FORMAT_NV12, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, impl->equirectNV12.GetAddressOf())) return false;
+        
+        D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+        rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        
+        // Y Plane
+        rtvDesc.Format = DXGI_FORMAT_R8_UNORM;
+        if (FAILED(self->m_device->CreateRenderTargetView(impl->equirectNV12.Get(), &rtvDesc, impl->nv12Y_RTV.GetAddressOf()))) return false;
+        
+        // UV Plane
+        rtvDesc.Format = DXGI_FORMAT_R8G8_UNORM; 
+        if (FAILED(self->m_device->CreateRenderTargetView(impl->equirectNV12.Get(), &rtvDesc, impl->nv12UV_RTV.GetAddressOf()))) return false;
+
+        // Sampler
+        D3D11_SAMPLER_DESC sampDesc = {};
+        sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        self->m_device->CreateSamplerState(&sampDesc, impl->linearSampler.GetAddressOf());
 
         // 4. Compile Shader
         // We assume shaders are in "shaders/" directory relative to DLL or current dir.
@@ -129,6 +163,44 @@ namespace Graphics {
                  return false;
              }
          }
+         
+         // Compile Conversion Shaders
+         // Only compiled once, but simple check
+         ID3DBlob* vsBlob = nullptr;
+         ID3DBlob* psYBlob = nullptr;
+         ID3DBlob* psUVBlob = nullptr;
+         
+         // Using D3DCompile directly or helper? Use Helper if generic. 
+         // But Helper is for CS. We need generic VS/PS. 
+         // Assuming ShaderCompiler has generic Compile methods or we use D3DCompile here.
+         // Let's use D3DCompileFromFile since we included d3dcompiler.h in pch.h
+         
+         ComPtr<ID3DBlob> errBlob;
+         DWORD flags = D3DCOMPILE_ENABLE_STRICTNESS;
+         
+         // VS
+         if (FAILED(D3DCompileFromFile(L"src/Graphics/RGBToNV12.hlsl", nullptr, nullptr, "VS", "vs_5_0", flags, 0, &vsBlob, &errBlob))) {
+             if (FAILED(D3DCompileFromFile(L"RGBToNV12.hlsl", nullptr, nullptr, "VS", "vs_5_0", flags, 0, &vsBlob, &errBlob))) {
+                LOG_ERROR("Failed to compile RGBToNV12 VS");
+                return false;
+             }
+         }
+         self->m_device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, impl->convertVS.GetAddressOf());
+         vsBlob->Release();
+
+         // PS Y
+         if (FAILED(D3DCompileFromFile(L"src/Graphics/RGBToNV12.hlsl", nullptr, nullptr, "PS_Y", "ps_5_0", flags, 0, &psYBlob, &errBlob))) {
+              if (FAILED(D3DCompileFromFile(L"RGBToNV12.hlsl", nullptr, nullptr, "PS_Y", "ps_5_0", flags, 0, &psYBlob, &errBlob))) return false;
+         }
+         self->m_device->CreatePixelShader(psYBlob->GetBufferPointer(), psYBlob->GetBufferSize(), nullptr, impl->convertPS_Y.GetAddressOf());
+         psYBlob->Release();
+
+         // PS UV
+         if (FAILED(D3DCompileFromFile(L"src/Graphics/RGBToNV12.hlsl", nullptr, nullptr, "PS_UV", "ps_5_0", flags, 0, &psUVBlob, &errBlob))) {
+              if (FAILED(D3DCompileFromFile(L"RGBToNV12.hlsl", nullptr, nullptr, "PS_UV", "ps_5_0", flags, 0, &psUVBlob, &errBlob))) return false;
+         }
+         self->m_device->CreatePixelShader(psUVBlob->GetBufferPointer(), psUVBlob->GetBufferSize(), nullptr, impl->convertPS_UV.GetAddressOf());
+         psUVBlob->Release();
 
         // 5. Init Encoder
         // 60 FPS target? Game FPS / 6.
@@ -212,8 +284,49 @@ namespace Graphics {
             
             // stateBlock destructor restores state automatically
 
-            // C. Encode
-            m_impl->encoder->EncodeFrame(m_impl->equirectTexture.Get());
+            // C. Convert to NV12
+            // Save state (already saved in stateBlock)
+            // Setup for Drawing
+            m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            m_context->IASetInputLayout(nullptr); // Bufferless
+            m_context->VSSetShader(m_impl->convertVS.Get(), nullptr, 0);
+            
+            ID3D11ShaderResourceView* srvsConv[] = { m_impl->equirectSRV.Get() };
+            m_context->PSSetShaderResources(0, 1, srvsConv);
+            m_context->PSSetSamplers(0, 1, m_impl->linearSampler.GetAddressOf());
+            
+            // Pass 1: Y (Full Res)
+            D3D11_VIEWPORT vp = {};
+            vp.Width = (float)eqDesc.Width; // equirectTexture dimensions
+            vp.Height = (float)eqDesc.Height;
+            vp.MinDepth = 0.0f;
+            vp.MaxDepth = 1.0f;
+            m_context->RSSetViewports(1, &vp);
+            
+            ID3D11RenderTargetView* rtvY[] = { m_impl->nv12Y_RTV.Get() };
+            m_context->OMSetRenderTargets(1, rtvY, nullptr);
+            m_context->PSSetShader(m_impl->convertPS_Y.Get(), nullptr, 0);
+            m_context->Draw(3, 0);
+            
+            // Pass 2: UV (Half Res)
+            vp.Width = (float)eqDesc.Width / 2.0f;
+            vp.Height = (float)eqDesc.Height / 2.0f;
+            m_context->RSSetViewports(1, &vp);
+            
+            ID3D11RenderTargetView* rtvUV[] = { m_impl->nv12UV_RTV.Get() };
+            m_context->OMSetRenderTargets(1, rtvUV, nullptr);
+            m_context->PSSetShader(m_impl->convertPS_UV.Get(), nullptr, 0);
+            m_context->Draw(3, 0); // Need to re-issue draw? Yes.
+            
+            // Clean Render Targets
+            ID3D11RenderTargetView* nullRTV[] = { nullptr };
+            m_context->OMSetRenderTargets(1, nullRTV, nullptr);
+            ID3D11ShaderResourceView* nullSRV2[] = { nullptr };
+            m_context->PSSetShaderResources(0, 1, nullSRV2);
+            
+            // D. Encode
+            // Pass the NV12 texture
+            m_impl->encoder->EncodeFrame(m_impl->equirectNV12.Get());
         }
 
         // Set Camera for the *upcoming* frame

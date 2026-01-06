@@ -128,4 +128,10 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     "${CMAKE_BINARY_DIR}/shaders"
 )
 
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy
+    "${CMAKE_SOURCE_DIR}/src/Graphics/RGBToNV12.hlsl"
+    "${CMAKE_BINARY_DIR}/RGBToNV12.hlsl"
+)
+
 message(STATUS "OmniCapture configuration complete. Build type: ${CMAKE_BUILD_TYPE}")
