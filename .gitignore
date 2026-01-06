@@ -90,5 +90,7 @@ record_*.mp4
 external/ffmpeg/*
 !external/ffmpeg/.gitkeep
 external/minhook/*
-!external/minhook/.gitkeep  
+!external/minhook/.gitkeep
+external/DirectXMath/*
+!external/DirectXMath/.gitkeep
 .idea

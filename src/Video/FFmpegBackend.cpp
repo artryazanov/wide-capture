@@ -105,7 +105,9 @@ namespace Video {
 
             AVDictionary* opt = nullptr;
             av_dict_set(&opt, "movflags", "faststart", 0);
-            avformat_write_header(m_fmtCtx, &opt);
+            if (avformat_write_header(m_fmtCtx, &opt) < 0) {
+                throw std::runtime_error("Failed to write header");
+            }
             
             return true;
         } catch (const std::exception& e) {

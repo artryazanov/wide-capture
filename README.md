@@ -35,21 +35,23 @@ WideCapture functions by injecting into the target process and hooking key graph
 ### External Dependencies
 Ensure the following libraries are placed in the `external/` directory:
 
-*   **MinHook**: [TsudaKageyu/minhook](https://github.com/TsudaKageyu/minhook)
-    1.  Clone the repository or download the source code.
-    2.  Place the contents in `external/minhook`.
-    3.  Ensure `CMakeLists.txt` is located at `external/minhook/CMakeLists.txt`. Structure:
+*   **DirectXMath**: [microsoft/DirectXMath](https://github.com/microsoft/DirectXMath)
+    1.  Download the source code or specific header files.
+    2.  Place the header files in `external/DirectXMath/include`.
+    3.  Ensure the structure looks like this:
 
         ```text
-        external/minhook/
-        ├── CMakeLists.txt
-        ├── include/
-        │   └── MinHook.h
-        ├── src/
-        └── ...
+        external/DirectXMath/
+        └── include/
+            ├── DirectXMath.h
+            ├── DirectXMathConvert.inl
+            ├── DirectXMathMatrix.inl
+            ├── DirectXMathMisc.inl
+            ├── DirectXMathVector.inl
+            └── ...
         ```
+    This external dependency is required to ensure full DirectXMath support on MinGW, which may have incomplete system headers.
 
-    The project will automatically build MinHook as part of the solution.
 
 *   **FFmpeg (Development Files)**:
     1.  Download the `release-full-shared` build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) (file `ffmpeg-release-full-shared.7z`).
@@ -68,6 +70,22 @@ Ensure the following libraries are placed in the `external/` directory:
         ```
 
     > **Important**: After building the project, copy the `.dll` files from the `bin` folder (inside the downloaded FFmpeg archive) to the directory containing your compiled `WideCapture.dll`. Otherwise, injection will fail.
+
+*   **MinHook**: [TsudaKageyu/minhook](https://github.com/TsudaKageyu/minhook)
+    1.  Clone the repository or download the source code.
+    2.  Place the contents in `external/minhook`.
+    3.  Ensure `CMakeLists.txt` is located at `external/minhook/CMakeLists.txt`. Structure:
+
+        ```text
+        external/minhook/
+        ├── CMakeLists.txt
+        ├── include/
+        │   └── MinHook.h
+        ├── src/
+        └── ...
+        ```
+
+    The project will automatically build MinHook as part of the solution.
 
 ## 🔨 Build Instructions
 
@@ -124,7 +142,7 @@ WideCapture/
 │   ├── Compute/        # Shaders & Compilation
 │   ├── Camera/         # Matrix Math & Camera Control
 │   └── Video/          # FFmpeg D3D11VA Backend
-├── external/           # Dependencies (MinHook, FFmpeg)
+├── external/           # Dependencies (MinHook, FFmpeg, DirectXMath)
 ├── scripts/            # Injection & Utility scripts
 └── CMakeLists.txt      # Build Configuration
 ```

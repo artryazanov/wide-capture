@@ -79,7 +79,10 @@ target_link_libraries(${PROJECT_NAME}
     swscale
 )
 
-target_include_directories(${PROJECT_NAME} PRIVATE src)
+target_include_directories(${PROJECT_NAME} PRIVATE 
+    src
+    external/DirectXMath/include
+)
 
 # Copy HLSL shaders to output directory
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
