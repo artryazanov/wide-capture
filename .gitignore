@@ -1,0 +1,92 @@
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Visual Studio files
+.vs/
+*.user
+*.userosscache
+*.sln.docstates
+*.suo
+*.opensdf
+*.sdf
+*.cache
+*.fileTable
+*.pbuser
+*.pbuser
+*.ilk
+*.pdb
+*.ipch
+*.aps
+*.ncb
+*.tlog
+*.log
+*.idb
+*.lastbuildstate
+*.unsuccessfulbuild
+*.tlog/
+*.obj/
+*.iobj
+*.ipdb
+*.iobj
+*.exp
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+_deps/
+
+# Build directories
+build/
+out/
+bin/
+start/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Logs
+*.log
+
+# WideCapture specific
+record_*.mp4
+*.mp4
+
+external/ffmpeg/*
+external/minhook/*  
+.idea

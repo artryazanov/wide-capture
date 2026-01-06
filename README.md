@@ -1,1 +1,108 @@
-# wide-capture
+# WideCapture
+
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20DirectX%2011-lightgrey.svg)
+![Language](https://img.shields.io/badge/language-C%2B%2B17-blue.svg)
+
+**WideCapture** is a high-performance, AAA-grade solution for capturing 360-degree (equirectangular) gameplay video from DirectX 11 applications. 
+
+Designed for reverse engineers and graphics programmers, it utilizes **DLL Injection**, **API Hooking**, **Compute Shaders**, and **Zero-Copy Hardware Encoding** to record panoramic video without accessing the game's source code.
+
+## 🚀 Key Features
+
+*   **Universal Compatibility**: Works with most DirectX 11 games (Unity, Unreal Engine, proprietary engines).
+*   **Zero-Copy Pipeline**: Data never leaves the GPU. Surfaces are shared directly between DirectX and the Video Encoder.
+*   **Compute Shader Stitching**: Converts 6 cubemap faces to Equirectangular projection purely on the GPU.
+*   **Hardware Acceleration**: Direct integration with FFmpeg's D3D11VA and NVENC/AMF for substantial performance.
+*   **Camera Hijacking**: Heuristic analysis of Constant Buffers to identify and manipulate the game's camera for 6-axis rendering.
+
+## 🛠️ Architecture
+
+WideCapture functions by injecting into the target process and hooking key graphics API calls:
+
+1.  **Injection**: The DLL enters the process and spins up a capture thread.
+2.  **Hooking**: Intercepts `IDXGISwapChain::Present` to control the frame cycle and `ID3D11DeviceContext::VSSetConstantBuffers` to manipulate the camera.
+3.  **Rendering**: For every single game frame, the engine is tricked into rendering 6 times (Front, Back, Left, Right, Up, Down).
+4.  **Stitching**: A Compute Shader (`ProjectionShader.hlsl`) samples these 6 views and writes to a single Equirectangular texture.
+5.  **Encoding**: The texture is passed to FFmpeg via D3D11 hardware context for immediate H.264 encoding.
+
+## 📋 Prerequisites
+
+*   **OS**: Windows 10/11 (x64)
+*   **Compiler**: MSVC v142+ (Visual Studio 2019/2022) with C++17 support.
+*   **Tools**: CMake 3.20+, Python 3.x (for injection scripts).
+
+### External Dependencies
+Ensure the following libraries are placed in the `external/` directory:
+
+*   **MinHook**: [TsudaKageyu/minhook](https://github.com/TsudaKageyu/minhook)
+*   **FFmpeg (Dev)**: Header files and linked libraries (`avcodec`, `avutil`, `avformat`, `swscale`).
+
+## 🔨 Build Instructions
+
+1.  **Clone the repository**:
+    ```bash
+    git clone https://github.com/artryazanov/wide-capture.git
+    cd WideCapture
+    ```
+
+2.  **Configure with CMake**:
+    ```bash
+    mkdir build
+    cd build
+    cmake .. -DCMAKE_BUILD_TYPE=Release
+    ```
+
+3.  **Build**:
+    ```bash
+    cmake --build . --config Release
+    ```
+
+    *Artifacts `WideCapture.dll` and `shaders/` will be generated in `build/Release`.*
+
+## 🎮 Usage
+
+### 1. Injection
+Use the provided Python script to inject the DLL into your target game.
+
+```bash
+python scripts/inject.py <process_name.exe> <path/to/WideCapture.dll>
+```
+
+*Example:* `python scripts/inject.py SkyrimSE.exe build/Release/WideCapture.dll`
+
+### 2. Controls
+*   **Automatic Start**: Recording begins immediately upon successful initialization of the graphics hooks.
+*   **Unload**: Press the `END` key to stop recording, finalize the MP4 file, and unload the DLL safely.
+
+### 3. Post-Processing (Metadata)
+To allow video players (YouTube, VLC) to recognize the file as 360° video, inject the spatial media metadata:
+
+```bash
+# Requires Google's spatial-media tool
+python spatial_media_injector.py -i record_360.mp4 -o final_output.mp4
+```
+
+## 📂 Project Structure
+
+```
+WideCapture/
+├── src/
+│   ├── Core/           # Hooks, Logger, Entry Point
+│   ├── Graphics/       # DX11 Management, Cubemap Logic
+│   ├── Compute/        # Shaders & Compilation
+│   ├── Camera/         # Matrix Math & Camera Control
+│   └── Video/          # FFmpeg D3D11VA Backend
+├── external/           # Dependencies (MinHook, FFmpeg)
+├── scripts/            # Injection & Utility scripts
+└── CMakeLists.txt      # Build Configuration
+```
+
+## ⚠️ Disclaimer
+
+This software is for educational and research purposes only. Using this tool in multiplayer games may trigger anti-cheat software (VAC, BattlEye, EasyAntiCheat) resulting in bans. Use only in single-player modes or controlled environments.
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Copyright (c) 2026 Artem Ryazanov
