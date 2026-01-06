@@ -53,9 +53,11 @@ Ensure the following libraries are placed in the `external/` directory:
     This external dependency is required to ensure full DirectXMath support on MinGW, which may have incomplete system headers.
 
 
-*   **FFmpeg (Development Files)**:
-    1.  Download the `release-full-shared` build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) (file `ffmpeg-release-full-shared.7z`).
-    2.  Extract the contents into `external/ffmpeg` so that the folder structure matches CMake expectations:
+*   **FFmpeg (Static Libraries for MSVC)**:
+    1.  Download a **static** build from [System233/ffmpeg-msvc-prebuilt](https://github.com/System233/ffmpeg-msvc-prebuilt/releases) (e.g., `ffmpeg-n7.1-latest-gpl-amd64-static.zip`).
+        *   *Note: Standard builds from gyan.dev do not contain the necessary static libraries for MSVC.*
+    2.  Extract the contents into `external/ffmpeg`.
+    3.  Ensure the structure matches:
 
         ```text
         external/ffmpeg/
@@ -63,13 +65,15 @@ Ensure the following libraries are placed in the `external/` directory:
         │   ├── libavcodec/
         │   ├── libavformat/
         │   └── ...
-        └── lib/              # Import libraries (.lib)
-            ├── avcodec.lib
-            ├── avformat.lib
+        └── lib/              # Static libraries (.a)
+            ├── libavcodec.a
+            ├── libavformat.a
+            ├── ...
+            ├── pkgconfig/
             └── ...
         ```
 
-    > **Important**: After building the project, copy the `.dll` files from the `bin` folder (inside the downloaded FFmpeg archive) to the directory containing your compiled `WideCapture.dll`. Otherwise, injection will fail.
+    > **Note**: This project is configured to link FFmpeg statically. You do **not** need to copy any FFmpeg DLLs to the output directory.
 
 *   **MinHook**: [TsudaKageyu/minhook](https://github.com/TsudaKageyu/minhook)
     1.  Clone the repository or download the source code.

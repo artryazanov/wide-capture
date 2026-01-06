@@ -4,14 +4,13 @@ project(WideCapture VERSION 1.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 
 # Compiler options for performance and safety
 if(MSVC)
     add_compile_options(
         /W4 /WX-                
-        /MP                     
-        /O2 /Oi /Ot             
+        /MP
         /Zc:inline              
         /D_CRT_SECURE_NO_WARNINGS
         /DNOMINMAX              
@@ -23,14 +22,15 @@ endif()
 # find_package(D3D11 REQUIRED) 
 
 # MinHook
-# In a real scenario, we might use FetchContent or find_package if installed.
-# Here we assume it's in external/minhook and has a CMakeLists.txt or we add it manually.
-# For simplicity based on spec, assuming standard subdirectory:
+# Configure MinHook to build as a static library
+set(MINHOOK_BUILD_STATIC_LIBS ON CACHE BOOL "Build MinHook as a static library" FORCE)
+set(MH_BUILD_SHARED_LIBS OFF CACHE BOOL "Build MinHook as a static library" FORCE) # Some versions use this
+
 if(EXISTS "${CMAKE_SOURCE_DIR}/external/minhook/CMakeLists.txt")
     add_subdirectory(external/minhook)
+    # Most MinHook CMake setups define a 'minhook' target
 else()
     message(WARNING "MinHook not found in external/minhook. Please ensure it is present.")
-    # Fallback or dummy target to allow configuration to proceed for code generation
     add_library(minhook INTERFACE) 
 endif()
 
@@ -71,18 +71,56 @@ add_library(${PROJECT_NAME} SHARED ${SOURCES} ${HEADERS})
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
     minhook
+    
+    # FFmpeg Libraries (Precise filenames for System233 static build)
+    ${FFMPEG_ROOT}/lib/libavformat.a
+    ${FFMPEG_ROOT}/lib/libavcodec.a
+    ${FFMPEG_ROOT}/lib/libavutil.a
+    ${FFMPEG_ROOT}/lib/libswscale.a
+    
+    # FFmpeg Static Dependencies (Found in the lib folder)
+    ${FFMPEG_ROOT}/lib/libswresample.a
+    ${FFMPEG_ROOT}/lib/zlib.lib
+    ${FFMPEG_ROOT}/lib/libx264.lib
+    ${FFMPEG_ROOT}/lib/x265-static.lib
+    ${FFMPEG_ROOT}/lib/vpxmt.lib
+    ${FFMPEG_ROOT}/lib/libwebp.lib
+    ${FFMPEG_ROOT}/lib/libwebpmux.lib
+    ${FFMPEG_ROOT}/lib/libsharpyuv.lib
+    ${FFMPEG_ROOT}/lib/jxl.lib
+    ${FFMPEG_ROOT}/lib/jxl_cms.lib
+    ${FFMPEG_ROOT}/lib/jxl_threads.lib
+    ${FFMPEG_ROOT}/lib/hwy.lib
+    ${FFMPEG_ROOT}/lib/brotlidec.lib
+    ${FFMPEG_ROOT}/lib/brotlienc.lib
+    ${FFMPEG_ROOT}/lib/brotlicommon.lib
+    # Add others if linker errors occur (e.g. libx265, libvpx)
+    
+    # Windows System Libraries (Required for D3D11 and Static FFmpeg)
     d3d11
     d3dcompiler
     dxgi
-    avcodec
-    avformat
-    avutil
-    swscale
+    
+    # Additional System Libraries often required by Static FFmpeg
+    bcrypt
+    secur32
+    mfplat
+    mfuuid
+    strmiids
+    ws2_32
+    shlwapi
+    user32
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE 
     src
     external/DirectXMath/include
+)
+
+# Optimization flags for specific configurations
+target_compile_options(${PROJECT_NAME} PRIVATE
+    $<$<CONFIG:Release>:/O2 /Oi /Ot>
+    $<$<CONFIG:RelWithDebInfo>:/O2 /Oi /Ot>
 )
 
 # Copy HLSL shaders to output directory
