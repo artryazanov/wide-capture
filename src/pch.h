@@ -5,6 +5,11 @@
 #include <d3d11.h>
 #include <dxgi.h>
 #include <d3dcompiler.h>
+
+// Force SSE2 for DirectXMath
+// #include <xmmintrin.h>
+// #include <smmintrin.h>
+#define _XM_NO_INTRINSICS_
 #include <DirectXMath.h>
 #include <wrl/client.h>
 

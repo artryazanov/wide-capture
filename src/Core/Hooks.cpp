@@ -76,13 +76,13 @@ namespace Core {
         if (!GetDX11VTable(pSwapChainVTable, sizeof(pSwapChainVTable))) return false;
 
         // Hook Present (8) and ResizeBuffers (13)
-        if (MH_CreateHook(pSwapChainVTable[8], &Hook_Present, reinterpret_cast<void**>(&oPresent)) != MH_OK) return false;
-        if (MH_CreateHook(pSwapChainVTable[13], &Hook_ResizeBuffers, reinterpret_cast<void**>(&oResizeBuffers)) != MH_OK) return false;
+        if (MH_CreateHook(pSwapChainVTable[8], reinterpret_cast<LPVOID>(&Hook_Present), reinterpret_cast<void**>(&oPresent)) != MH_OK) return false;
+        if (MH_CreateHook(pSwapChainVTable[13], reinterpret_cast<LPVOID>(&Hook_ResizeBuffers), reinterpret_cast<void**>(&oResizeBuffers)) != MH_OK) return false;
 
         // 2. Get DeviceContext VTable
         // We need to create specific device to get the vtable.
         // Copy-paste creation logic for now or refactor. Compactness favored.
-         WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, DefWindowProc, 0L, 0L, GetModuleHandle(NULL), "DX11Temp2", NULL, NULL, NULL, "DX11Temp2", NULL };
+         WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, DefWindowProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, "DX11Temp2", NULL };
         RegisterClassEx(&wc);
         HWND hWnd = CreateWindow("DX11Temp2", NULL, WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, NULL, NULL, wc.hInstance, NULL);
         
@@ -122,7 +122,7 @@ namespace Core {
         // 8 PSSetShaderResources
         // ...
         
-        if (MH_CreateHook(pContextVTable[7], &Hook_VSSetConstantBuffers, reinterpret_cast<void**>(&oVSSetConstantBuffers)) != MH_OK) {
+        if (MH_CreateHook(pContextVTable[7], reinterpret_cast<LPVOID>(&Hook_VSSetConstantBuffers), reinterpret_cast<void**>(&oVSSetConstantBuffers)) != MH_OK) {
             LOG_ERROR("Failed to hook VSSetConstantBuffers");
              // Don't fail entire install maybe? Just warn. But camera won't work.
              // return false; 

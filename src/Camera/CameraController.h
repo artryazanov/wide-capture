@@ -32,8 +32,8 @@ namespace Camera {
         ID3D11Buffer* m_cachedCameraBuffer = nullptr;
         UINT m_cachedSlot = -1;
 
-        XMMATRIX GetViewMatrixForFace(XMMATRIX originalView, CubeFace face);
-        XMMATRIX GetProjectionMatrix90FOV(XMMATRIX originalProj);
+        DirectX::XMMATRIX GetViewMatrixForFace(DirectX::XMMATRIX originalView, CubeFace face);
+        DirectX::XMMATRIX GetProjectionMatrix90FOV(DirectX::XMMATRIX originalProj);
         
         bool IsProjectionMatrix(const float* data);
     };

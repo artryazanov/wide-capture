@@ -89,34 +89,34 @@ namespace Camera {
         // For now, let's finish `CameraController.cpp` assuming the hook exists and passes the buffer.
     }
     
-    XMMATRIX CameraController::GetViewMatrixForFace(XMMATRIX originalView, CubeFace face) {
+    DirectX::XMMATRIX CameraController::GetViewMatrixForFace(DirectX::XMMATRIX originalView, CubeFace face) {
         // 1. Extract position from original view
-        XMVECTOR scale, rotQuat, trans;
-        XMMatrixDecompose(&scale, &rotQuat, &trans, originalView);
+        DirectX::XMVECTOR scale, rotQuat, trans;
+        DirectX::XMMatrixDecompose(&scale, &rotQuat, &trans, originalView);
         
         // Invert view to get world transform of camera
-        XMMATRIX invView = XMMatrixInverse(nullptr, originalView);
-        XMVECTOR eyePos = invView.r[3]; 
+        DirectX::XMMATRIX invView = DirectX::XMMatrixInverse(nullptr, originalView);
+        DirectX::XMVECTOR eyePos = invView.r[3]; 
 
         // 2. Create new view for the face
-        XMVECTOR up = XMVectorSet(0, 1, 0, 0);
-        XMVECTOR forward;
+        DirectX::XMVECTOR up = DirectX::XMVectorSet(0, 1, 0, 0);
+        DirectX::XMVECTOR forward;
 
         switch (face) {
-            case CubeFace::Right: forward = XMVectorSet(1, 0, 0, 0); break;
-            case CubeFace::Left:  forward = XMVectorSet(-1, 0, 0, 0); break;
-            case CubeFace::Up:    forward = XMVectorSet(0, 1, 0, 0); up = XMVectorSet(0, 0, -1, 0); break;
-            case CubeFace::Down:  forward = XMVectorSet(0, -1, 0, 0); up = XMVectorSet(0, 0, 1, 0); break;
-            case CubeFace::Front: forward = XMVectorSet(0, 0, 1, 0); break;
-            case CubeFace::Back:  forward = XMVectorSet(0, 0, -1, 0); break;
+            case CubeFace::Right: forward = DirectX::XMVectorSet(1, 0, 0, 0); break;
+            case CubeFace::Left:  forward = DirectX::XMVectorSet(-1, 0, 0, 0); break;
+            case CubeFace::Up:    forward = DirectX::XMVectorSet(0, 1, 0, 0); up = DirectX::XMVectorSet(0, 0, -1, 0); break;
+            case CubeFace::Down:  forward = DirectX::XMVectorSet(0, -1, 0, 0); up = DirectX::XMVectorSet(0, 0, 1, 0); break;
+            case CubeFace::Front: forward = DirectX::XMVectorSet(0, 0, 1, 0); break;
+            case CubeFace::Back:  forward = DirectX::XMVectorSet(0, 0, -1, 0); break;
         }
 
-        return XMMatrixLookAtLH(eyePos, eyePos + forward, up);
+        return DirectX::XMMatrixLookAtLH(eyePos, eyePos + forward, up);
     }
 
-    XMMATRIX CameraController::GetProjectionMatrix90FOV(XMMATRIX originalProj) {
+    DirectX::XMMATRIX CameraController::GetProjectionMatrix90FOV(DirectX::XMMATRIX originalProj) {
         // We need 90 degrees FOV for cubemap faces (to cover 360)
         // Aspect ratio must be 1:1
-        return XMMatrixPerspectiveFovLH(XM_PIDIV2, 1.0f, 0.1f, 1000.0f); // Near/Far planes should ideally match game's
+        return DirectX::XMMatrixPerspectiveFovLH(DirectX::XM_PIDIV2, 1.0f, 0.1f, 1000.0f); // Near/Far planes should ideally match game's
     }
 }
