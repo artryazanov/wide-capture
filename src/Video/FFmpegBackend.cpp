@@ -138,9 +138,16 @@ namespace Video {
         device->GetImmediateContext(&ctx);
         
         if (ctx) {
-             // The frame->data[0] is the ID3D11Texture2D* in D3D11VA
+            // FIX: Use CopySubresourceRegion instead of CopyResource
+            // frame->data[0] is the resource (likely Texture2DArray if pool > 0)
+            // frame->data[1] is the index (array slice) within that resource
+            
             ID3D11Texture2D* dstTexture = (ID3D11Texture2D*)frame->data[0];
-            ctx->CopyResource(dstTexture, pSourceTexture);
+            intptr_t index = (intptr_t)frame->data[1]; // Subresource index
+
+            // Copy entire texture to the specific subresource index
+            ctx->CopySubresourceRegion(dstTexture, (UINT)index, 0, 0, 0, pSourceTexture, 0, nullptr);
+            
             ctx->Release();
         }
 
