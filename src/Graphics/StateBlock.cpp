@@ -12,37 +12,76 @@ namespace Graphics {
 
     void StateBlock::Capture() {
         // IA
-        m_context->IAGetInputLayout(m_inputLayout.GetAddressOf());
+        // IA
+        m_context->IAGetInputLayout(m_inputLayout.ReleaseAndGetAddressOf());
         m_context->IAGetPrimitiveTopology(&m_topology);
-        m_context->IAGetIndexBuffer(m_indexBuffer.GetAddressOf(), &m_indexBufferFormat, &m_indexBufferOffset);
-        m_context->IAGetVertexBuffers(0, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT, m_vertexBuffers[0].GetAddressOf(), m_vertexStrides, m_vertexOffsets);
+        m_context->IAGetIndexBuffer(m_indexBuffer.ReleaseAndGetAddressOf(), &m_indexBufferFormat, &m_indexBufferOffset);
+        
+        ID3D11Buffer* vbs[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = { nullptr };
+        UINT strides[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
+        UINT offsets[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
+        m_context->IAGetVertexBuffers(0, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT, vbs, m_vertexStrides, m_vertexOffsets);
+        for(int i=0; i<D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; ++i) {
+            m_vertexBuffers[i].Attach(vbs[i]);
+        }
 
         // RS
-        m_context->RSGetState(m_rasterizerState.GetAddressOf());
+        // RS
+        m_context->RSGetState(m_rasterizerState.ReleaseAndGetAddressOf());
         m_numViewports = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
         m_context->RSGetViewports(&m_numViewports, m_viewports);
 
         // VS
-        m_context->VSGetShader(m_vertexShader.GetAddressOf(), nullptr, nullptr);
-        m_context->VSGetConstantBuffers(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, m_vsConstantBuffers[0].GetAddressOf());
-
+        // VS
+        m_context->VSGetShader(m_vertexShader.ReleaseAndGetAddressOf(), nullptr, nullptr);
+        
+        ID3D11Buffer* vsCBs[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = { nullptr };
+        m_context->VSGetConstantBuffers(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, vsCBs);
+        for(int i=0; i<D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT; ++i) m_vsConstantBuffers[i].Attach(vsCBs[i]);
+        
         // PS
-        m_context->PSGetShader(m_pixelShader.GetAddressOf(), nullptr, nullptr);
-        m_context->PSGetConstantBuffers(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, m_psConstantBuffers[0].GetAddressOf());
-        m_context->PSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, m_psSRVs[0].GetAddressOf());
-        m_context->PSGetSamplers(0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT, m_psSamplers[0].GetAddressOf());
+        m_context->PSGetShader(m_pixelShader.ReleaseAndGetAddressOf(), nullptr, nullptr);
+        
+        ID3D11Buffer* psCBs[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = { nullptr };
+        m_context->PSGetConstantBuffers(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, psCBs);
+        for(int i=0; i<D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT; ++i) m_psConstantBuffers[i].Attach(psCBs[i]);
+
+        ID3D11ShaderResourceView* psSRVs[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = { nullptr };
+        m_context->PSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, psSRVs);
+        for(int i=0; i<D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; ++i) m_psSRVs[i].Attach(psSRVs[i]);
+
+        ID3D11SamplerState* psSamplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = { nullptr };
+        m_context->PSGetSamplers(0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT, psSamplers);
+        for(int i=0; i<D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++i) m_psSamplers[i].Attach(psSamplers[i]);
 
         // OM
-        m_context->OMGetBlendState(m_blendState.GetAddressOf(), m_blendFactor, &m_sampleMask);
-        m_context->OMGetDepthStencilState(m_depthStencilState.GetAddressOf(), &m_stencilRef);
-        m_context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, m_renderTargetViews[0].GetAddressOf(), m_depthStencilView.GetAddressOf());
+        // OM
+        m_context->OMGetBlendState(m_blendState.ReleaseAndGetAddressOf(), m_blendFactor, &m_sampleMask);
+        m_context->OMGetDepthStencilState(m_depthStencilState.ReleaseAndGetAddressOf(), &m_stencilRef);
+        
+        ID3D11RenderTargetView* rtvs[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = { nullptr };
+        m_context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rtvs, m_depthStencilView.ReleaseAndGetAddressOf());
+        for(int i=0; i<D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i) m_renderTargetViews[i].Attach(rtvs[i]);
 
         // CS
-        m_context->CSGetShader(m_computeShader.GetAddressOf(), nullptr, nullptr);
-        m_context->CSGetConstantBuffers(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, m_csConstantBuffers[0].GetAddressOf());
-        m_context->CSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, m_csSRVs[0].GetAddressOf());
-        m_context->CSGetUnorderedAccessViews(0, D3D11_1_UAV_SLOT_COUNT, m_csUAVs[0].GetAddressOf());
-        m_context->CSGetSamplers(0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT, m_csSamplers[0].GetAddressOf());
+        // CS
+        m_context->CSGetShader(m_computeShader.ReleaseAndGetAddressOf(), nullptr, nullptr);
+        
+        ID3D11Buffer* csCBs[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] = { nullptr };
+        m_context->CSGetConstantBuffers(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, csCBs);
+        for(int i=0; i<D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT; ++i) m_csConstantBuffers[i].Attach(csCBs[i]);
+        
+        ID3D11ShaderResourceView* csSRVs[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = { nullptr };
+        m_context->CSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, csSRVs);
+        for(int i=0; i<D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; ++i) m_csSRVs[i].Attach(csSRVs[i]);
+        
+        ID3D11UnorderedAccessView* csUAVs[D3D11_1_UAV_SLOT_COUNT] = { nullptr };
+        m_context->CSGetUnorderedAccessViews(0, D3D11_1_UAV_SLOT_COUNT, csUAVs);
+        for(int i=0; i<D3D11_1_UAV_SLOT_COUNT; ++i) m_csUAVs[i].Attach(csUAVs[i]);
+
+        ID3D11SamplerState* csSamplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = { nullptr };
+        m_context->CSGetSamplers(0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT, csSamplers);
+        for(int i=0; i<D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++i) m_csSamplers[i].Attach(csSamplers[i]);
     }
 
     void StateBlock::Restore() {

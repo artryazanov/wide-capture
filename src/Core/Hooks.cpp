@@ -109,10 +109,10 @@ namespace Core {
         // Context VTable is at the start of the object
         void** pContextVTable = *reinterpret_cast<void***>(pContext.Get());
         
-        // Hook VSSetConstantBuffers (Index 7)
+        // Hook VSSetConstantBuffers (Index 8)
         // DIAGNOSTIC DISABLE: Suspected crash source
         /*
-        if (MH_CreateHook(pContextVTable[7], reinterpret_cast<LPVOID>(&Hook_VSSetConstantBuffers), reinterpret_cast<void**>(&oVSSetConstantBuffers)) != MH_OK) {
+        if (MH_CreateHook(pContextVTable[8], reinterpret_cast<LPVOID>(&Hook_VSSetConstantBuffers), reinterpret_cast<void**>(&oVSSetConstantBuffers)) != MH_OK) {
             LOG_ERROR("Failed to hook VSSetConstantBuffers");
             // Resources released by ComPtr destructors
             DestroyWindow(hWnd);
