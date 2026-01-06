@@ -13,6 +13,9 @@ void CaptureThread(HMODULE hModule) {
     LOG_INFO("WideCapture injected successfully. Thread ID: ", GetCurrentThreadId());
 
     try {
+        // Wait for game initialization
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
         // Init Hooks
         g_Hooks = std::make_unique<Core::Hooks>();
         if (!g_Hooks->Install()) {
