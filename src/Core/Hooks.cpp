@@ -80,9 +80,7 @@ namespace Core {
         if (MH_CreateHook(pSwapChainVTable[13], reinterpret_cast<LPVOID>(&Hook_ResizeBuffers), reinterpret_cast<void**>(&oResizeBuffers)) != MH_OK) return false;
 
         // 2. Get DeviceContext VTable
-        // We need to create specific device to get the vtable.
-        // Copy-paste creation logic for now or refactor. Compactness favored.
-         WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, DefWindowProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, "DX11Temp2", NULL };
+        WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, DefWindowProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, "DX11Temp2", NULL };
         RegisterClassEx(&wc);
         HWND hWnd = CreateWindow("DX11Temp2", NULL, WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, NULL, NULL, wc.hInstance, NULL);
         
@@ -95,42 +93,31 @@ namespace Core {
         scd.Windowed = TRUE;
         scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
-        ID3D11Device* pDevice = nullptr;
-        ID3D11DeviceContext* pContext = nullptr;
-        IDXGISwapChain* pSwapChain = nullptr;
+        // Use ComPtr to auto-release strictness
+        Microsoft::WRL::ComPtr<ID3D11Device> pDevice;
+        Microsoft::WRL::ComPtr<ID3D11DeviceContext> pContext;
+        Microsoft::WRL::ComPtr<IDXGISwapChain> pSwapChain;
         
-        D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, nullptr, 0, D3D11_SDK_VERSION, &scd, &pSwapChain, &pDevice, nullptr, &pContext);
+        HRESULT hr = D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, nullptr, 0, D3D11_SDK_VERSION, &scd, pSwapChain.GetAddressOf(), pDevice.GetAddressOf(), nullptr, pContext.GetAddressOf());
         
-        void** pContextVTable = *reinterpret_cast<void***>(pContext);
-        // VSSetConstantBuffers is index 7 (VSSetShaderResources=25... woot? Check headers)
-        // I need to be precise. 
-        // ID3D11DeviceChild methods: 4 (QueryInterface, AddRef, Release, GetDevice, GetPrivateData, SetPrivateData, SetPrivateDataInterface?? No)
-        // IUnknown: 3. ID3D11DeviceChild: +4 = 7? No.
-        // Let's use offsets from documentation or standard knowledge.
-        // VSSetConstantBuffers is indeed usually index 7 or nearby.
-        // Exact layout:
-        // 0: QueryInterface, 1: AddRef, 2: Release
-        // 3: GetDevice, 4: GetPrivateData, 5: SetPrivateData, 6: SetPrivateDataInterface
-        // 7: VSSetConstantBuffers
-        // 8: PSSetShaderResources ... No, order is specific.
-        // According to commonly available vtables:
-        // 7 is VSSetConstantBuffers
-        // Wait, checking online references...
-        // 0-2 IUnknown
-        // 3-6 ID3D11DeviceChild
-        // 7 VSSetConstantBuffers
-        // 8 PSSetShaderResources
-        // ...
+        if (FAILED(hr) || !pContext) {
+            LOG_ERROR("Failed to create temp DX11 device for Context VTable");
+            DestroyWindow(hWnd);
+            return false;
+        }
         
+        // Context VTable is at the start of the object
+        void** pContextVTable = *reinterpret_cast<void***>(pContext.Get());
+        
+        // Hook VSSetConstantBuffers (Index 7)
         if (MH_CreateHook(pContextVTable[7], reinterpret_cast<LPVOID>(&Hook_VSSetConstantBuffers), reinterpret_cast<void**>(&oVSSetConstantBuffers)) != MH_OK) {
             LOG_ERROR("Failed to hook VSSetConstantBuffers");
-             // Don't fail entire install maybe? Just warn. But camera won't work.
-             // return false; 
+            // Resources released by ComPtr destructors
+            DestroyWindow(hWnd);
+            return false;
         }
 
-        pSwapChain->Release();
-        pDevice->Release();
-        pContext->Release();
+        // Resources released by ComPtr destructors
         DestroyWindow(hWnd);
 
         return MH_EnableHook(MH_ALL_HOOKS) == MH_OK;
@@ -147,14 +134,16 @@ namespace Core {
 
     HRESULT __stdcall Hooks::Hook_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
         if (!m_isInitialized) {
-            ID3D11Device* device = nullptr;
-            ID3D11DeviceContext* context = nullptr;
+            Microsoft::WRL::ComPtr<ID3D11Device> device;
+            Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
             
-            if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D11Device), (void**)&device))) {
-                device->GetImmediateContext(&context);
-                g_CubemapManager = std::make_unique<Graphics::CubemapManager>(device, context);
-                device->Release();
-                context->Release();
+            if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D11Device), (void**)device.GetAddressOf()))) {
+                device->GetImmediateContext(context.GetAddressOf());
+                
+                // CubemapManager now uses ComPtrs internally, so it will add its own refs.
+                // We pass raw pointers, and it will wrap them safely.
+                g_CubemapManager = std::make_unique<Graphics::CubemapManager>(device.Get(), context.Get());
+                
                 m_isInitialized = true;
                 LOG_INFO("DirectX 11 Context Initialized.");
             }
@@ -176,18 +165,20 @@ namespace Core {
 
     void __stdcall Hooks::Hook_VSSetConstantBuffers(ID3D11DeviceContext* pContext, UINT StartSlot, UINT NumBuffers, ID3D11Buffer* const* ppConstantBuffers) {
         // Intercept logic
-        if (g_CubemapManager && g_CubemapManager->IsRecording()) {
+        if (g_CubemapManager && g_CubemapManager->IsRecording() && ppConstantBuffers) {
             Camera::CameraController* camCtrl = g_CubemapManager->GetCameraController();
             if (camCtrl) {
-                // Check buffers. We iterate.
+                // Check buffers safely
                 for (UINT i = 0; i < NumBuffers; ++i) {
-                    if (ppConstantBuffers[i]) {
+                    if (ppConstantBuffers[i]) { // Null check per buffer
                          camCtrl->CheckAndModifyConstantBuffer(StartSlot + i, ppConstantBuffers[i]);
                     }
                 }
             }
         }
         
-        oVSSetConstantBuffers(pContext, StartSlot, NumBuffers, ppConstantBuffers);
+        if (oVSSetConstantBuffers) {
+            oVSSetConstantBuffers(pContext, StartSlot, NumBuffers, ppConstantBuffers);
+        }
     }
 }

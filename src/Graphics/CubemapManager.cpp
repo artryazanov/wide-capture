@@ -48,6 +48,7 @@ namespace Graphics {
         if (m_impl && m_impl->encoder) {
             m_impl->encoder->Finish();
         }
+        // ComPtr handles Release automatically
     }
 
     bool CubemapManager::IsRecording() const {
@@ -64,7 +65,7 @@ namespace Graphics {
         impl->width = w;
         impl->height = h;
 
-        DX11Proxy proxy(self->m_device, self->m_context);
+        DX11Proxy proxy(self->m_device.Get(), self->m_context.Get());
 
         // 1. Create Face Textures (R8G8B8A8)
         for(int i=0; i<6; ++i) {
@@ -104,9 +105,9 @@ namespace Graphics {
         // 4. Compile Shader
         // We assume shaders are in "shaders/" directory relative to DLL or current dir.
         // Since we copied them in CMake.
-         if (FAILED(Compute::ShaderCompiler::CompileComputeShader(self->m_device, L"shaders/ProjectionShader.hlsl", "main", impl->projectionShader.GetAddressOf()))) {
+         if (FAILED(Compute::ShaderCompiler::CompileComputeShader(self->m_device.Get(), L"shaders/ProjectionShader.hlsl", "main", impl->projectionShader.GetAddressOf()))) {
              // Try current directory as fallback
-             if (FAILED(Compute::ShaderCompiler::CompileComputeShader(self->m_device, L"ProjectionShader.hlsl", "main", impl->projectionShader.GetAddressOf()))) {
+             if (FAILED(Compute::ShaderCompiler::CompileComputeShader(self->m_device.Get(), L"ProjectionShader.hlsl", "main", impl->projectionShader.GetAddressOf()))) {
                  LOG_ERROR("Could not find ProjectionShader.hlsl");
                  return false;
              }
@@ -117,7 +118,7 @@ namespace Graphics {
         // If Game is 60fps, Video is 10fps. Bad.
         // Assuming we want 60fps video -> Game must range 360fps.
         // Or we record at whatever rate we get.
-        if (!impl->encoder->Initialize(self->m_device, eqW, eqH, 60, "record_360.mp4")) return false;
+        if (!impl->encoder->Initialize(self->m_device.Get(), eqW, eqH, 60, "record_360.mp4")) return false;
 
         impl->isInitialized = true;
         return true;
@@ -161,7 +162,7 @@ namespace Graphics {
             }
 
             // B. Dispatch Compute
-            StateBlock stateBlock(m_context); // Save state
+            StateBlock stateBlock(m_context.Get()); // Save state
             
             m_context->CSSetShader(m_impl->projectionShader.Get(), nullptr, 0);
             ID3D11ShaderResourceView* srvs[] = { m_impl->cubeSRV.Get() };

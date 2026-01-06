@@ -1,4 +1,4 @@
-#pragma once
+#include <wrl/client.h>
 #include <d3d11.h>
 #include <memory>
 
@@ -6,6 +6,8 @@
 namespace Camera { class CameraController; }
 
 namespace Graphics {
+    using Microsoft::WRL::ComPtr;
+
     // Forward declaration of the implementation struct
     struct CubemapManagerImpl;
 
@@ -24,8 +26,8 @@ namespace Graphics {
         friend bool InitResources(CubemapManager* self, UINT w, UINT h);
 
     private:
-        ID3D11Device* m_device = nullptr;
-        ID3D11DeviceContext* m_context = nullptr;
+        ComPtr<ID3D11Device> m_device;
+        ComPtr<ID3D11DeviceContext> m_context;
         bool m_isRecording = false; // Kept as member for fast access
         
         std::unique_ptr<CubemapManagerImpl> m_impl;
