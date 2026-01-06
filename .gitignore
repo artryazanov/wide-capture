@@ -88,5 +88,7 @@ record_*.mp4
 *.mp4
 
 external/ffmpeg/*
-external/minhook/*  
+!external/ffmpeg/.gitkeep
+external/minhook/*
+!external/minhook/.gitkeep  
 .idea
