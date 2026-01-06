@@ -6,6 +6,7 @@
 #include "StateBlock.h"
 #include "../Core/Logger.h"
 #include "DX11Proxy.h"
+#include <algorithm>
 
 namespace Graphics {
     // Globals or injected dependencies
@@ -99,10 +100,19 @@ namespace Graphics {
         // Width = 4 * Height (roughly, or 2*Pi*R vs Pi*R). Usually 2:1 aspect ratio.
         // If Face is WxH, Sphere is roughly 4*W x 2*W?
         // Standard: 4096x2048 for 4K.
-        UINT eqW = w * 4;
-        UINT eqH = w * 2; 
+        // 3. Equirectangular Output (UAV)
+        // Adjust resolution: Clamp to Max 4096 width (4K) to stay within safe H.264 levels
+        // Typical equirectangular is 2:1 aspect ratio.
+        UINT eqW = std::min<UINT>(w * 4, 4096); 
+        UINT eqH = eqW / 2;
         
-        if (!proxy.CreateTexture2D(eqW, eqH, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE, impl->equirectTexture.GetAddressOf())) return false;
+        // Align to 16 for video encoding safety
+        eqW = (eqW + 15) & ~15;
+        eqH = (eqH + 15) & ~15;
+
+        LOG_INFO("Initializing Capture. Game: ", w, "x", h, " Output: ", eqW, "x", eqH);
+        
+        if (!proxy.CreateTexture2D(eqW, eqH, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET, impl->equirectTexture.GetAddressOf())) return false;
         if (FAILED(self->m_device->CreateUnorderedAccessView(impl->equirectTexture.Get(), nullptr, impl->equirectUAV.GetAddressOf()))) return false;
 
         // 4. Compile Shader
@@ -175,16 +185,11 @@ namespace Graphics {
             ID3D11UnorderedAccessView* uavs[] = { m_impl->equirectUAV.Get() };
             m_context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
             
-            UINT width, height;
-            // Get dimensions from output texture
             D3D11_TEXTURE2D_DESC eqDesc;
             m_impl->equirectTexture->GetDesc(&eqDesc);
-            width = eqDesc.Width;
-            height = eqDesc.Height;
             
-            // Dispatch 16x16 threads
-            UINT x = (width + 15) / 16;
-            UINT y = (height + 15) / 16;
+            UINT x = (eqDesc.Width + 15) / 16;
+            UINT y = (eqDesc.Height + 15) / 16;
             m_context->Dispatch(x, y, 1);
             
             // Clean up CS slots (important!)
