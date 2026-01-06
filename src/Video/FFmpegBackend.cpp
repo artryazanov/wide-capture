@@ -51,9 +51,7 @@ namespace Video {
 
         AVHWFramesContext* framesCtx = (AVHWFramesContext*)m_hwFramesRef->data;
         framesCtx->format = AV_PIX_FMT_D3D11;   
-        framesCtx->sw_format = AV_PIX_FMT_NV12;  
-        framesCtx->width = m_width;
-        framesCtx->height = m_height;
+        framesCtx->sw_format = AV_PIX_FMT_RGBA; // Match DXGI_FORMAT_R8G8B8A8_UNORM
         framesCtx->width = m_width;
         framesCtx->height = m_height;
         framesCtx->initial_pool_size = 20; // Ensure pool is allocated for CopyResource workflow
