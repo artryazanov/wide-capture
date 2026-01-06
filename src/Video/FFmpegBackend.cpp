@@ -54,7 +54,9 @@ namespace Video {
         framesCtx->sw_format = AV_PIX_FMT_NV12;  
         framesCtx->width = m_width;
         framesCtx->height = m_height;
-        framesCtx->initial_pool_size = 0;
+        framesCtx->width = m_width;
+        framesCtx->height = m_height;
+        framesCtx->initial_pool_size = 20; // Ensure pool is allocated for CopyResource workflow
 
         if (av_hwframe_ctx_init(m_hwFramesRef) < 0) throw std::runtime_error("Failed to init HW frames ctx");
     }
@@ -119,17 +121,34 @@ namespace Video {
     void FFmpegBackend::EncodeFrame(ID3D11Texture2D* pSourceTexture) {
         std::lock_guard<std::mutex> lock(m_mutex);
 
+        // 1. Allocate a frame from the HW pool
         AVFrame* frame = av_frame_alloc();
-        frame->format = AV_PIX_FMT_D3D11;
-        frame->width = m_width;
-        frame->height = m_height;
+        if (av_hwframe_get_buffer(m_hwFramesRef, frame, 0) < 0) {
+            LOG_ERROR("Failed to allocate HW frame");
+            av_frame_free(&frame);
+            return;
+        }
+
+        // 2. Map/Copy Logic
+        // We need ID3D11DeviceContext to CopyResource.
+        // We can get it from the device associated with the HW context.
+        AVHWDeviceContext* deviceCtx = (AVHWDeviceContext*)m_hwDeviceRef->data;
+        AVD3D11VADeviceContext* d3d11Ctx = (AVD3D11VADeviceContext*)deviceCtx->hwctx;
+        ID3D11Device* device = d3d11Ctx->device;
+        
+        ID3D11DeviceContext* ctx = nullptr;
+        device->GetImmediateContext(&ctx);
+        
+        if (ctx) {
+             // The frame->data[0] is the ID3D11Texture2D* in D3D11VA
+            ID3D11Texture2D* dstTexture = (ID3D11Texture2D*)frame->data[0];
+            ctx->CopyResource(dstTexture, pSourceTexture);
+            ctx->Release();
+        }
+
         frame->pts = m_pts++;
 
-        frame->data[0] = (uint8_t*)pSourceTexture;
-        frame->data[1] = (uint8_t*)(intptr_t)0; // Index in array
-        
-        frame->buf[0] = av_buffer_create(nullptr, 0, nullptr, nullptr, 0);
-
+        // 3. Send to Validated Frame
         int ret = avcodec_send_frame(m_codecCtx, frame);
         if (ret < 0) {
             LOG_ERROR("Error sending frame to encoder: ", ret);
@@ -151,6 +170,6 @@ namespace Video {
         }
 
         av_packet_free(&pkt);
-        av_frame_free(&frame);
+        av_frame_free(&frame); // Returns texture to pool
     }
 }
