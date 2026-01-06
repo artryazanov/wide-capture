@@ -36,7 +36,38 @@ WideCapture functions by injecting into the target process and hooking key graph
 Ensure the following libraries are placed in the `external/` directory:
 
 *   **MinHook**: [TsudaKageyu/minhook](https://github.com/TsudaKageyu/minhook)
-*   **FFmpeg (Dev)**: Header files and linked libraries (`avcodec`, `avutil`, `avformat`, `swscale`).
+    1.  Clone the repository or download the source code.
+    2.  Place the contents in `external/minhook`.
+    3.  Ensure `CMakeLists.txt` is located at `external/minhook/CMakeLists.txt`. Structure:
+
+        ```text
+        external/minhook/
+        ├── CMakeLists.txt
+        ├── include/
+        │   └── MinHook.h
+        ├── src/
+        └── ...
+        ```
+
+    The project will automatically build MinHook as part of the solution.
+
+*   **FFmpeg (Development Files)**:
+    1.  Download the `release-full-shared` build from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) (file `ffmpeg-release-full-shared.7z`).
+    2.  Extract the contents into `external/ffmpeg` so that the folder structure matches CMake expectations:
+
+        ```text
+        external/ffmpeg/
+        ├── include/          # Header files (.h)
+        │   ├── libavcodec/
+        │   ├── libavformat/
+        │   └── ...
+        └── lib/              # Import libraries (.lib)
+            ├── avcodec.lib
+            ├── avformat.lib
+            └── ...
+        ```
+
+    > **Important**: After building the project, copy the `.dll` files from the `bin` folder (inside the downloaded FFmpeg archive) to the directory containing your compiled `WideCapture.dll`. Otherwise, injection will fail.
 
 ## 🔨 Build Instructions
 
@@ -105,4 +136,3 @@ This software is for educational and research purposes only. Using this tool in 
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-Copyright (c) 2026 Artem Ryazanov
