@@ -8,6 +8,15 @@
 
 Designed for reverse engineers and graphics programmers, it utilizes **DLL Injection**, **API Hooking**, **Compute Shaders**, and **Zero-Copy Hardware Encoding** to record panoramic video without accessing the game's source code.
 
+
+
+> [!WARNING]
+> **Development Status**: This project is currently in a **Proof of Concept / Alpha** stage.
+> *   **Implemented**: Basic DLL injection mechanism, DirectX 11 hooking infrastructure (MinHook), and foundational FFmpeg integration.
+> *   **Work in Progress**: Reliable camera hijacking heuristics, correct cubemap rendering/stitching, and stable hardware encoding.
+>
+> The features described below represent the **target architecture and goals** of the project. Expect crashes, visual artifacts, and incomplete functionality in the current version.
+
 ## 🚀 Key Features
 
 *   **Universal Compatibility**: Works with most DirectX 11 games (Unity, Unreal Engine, proprietary engines).
