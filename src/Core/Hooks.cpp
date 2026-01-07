@@ -64,18 +64,7 @@ namespace Core {
 
         // SWAP CHAIN VTABLE
         void** vTable = *reinterpret_cast<void***>(pSwapChain);
-        memcpy(pTable, vTable, size); // Copying SwapChain VTable
-
-        // WAIT, we also need DeviceContext VTable for VSSetConstantBuffers!
-        // SwapChain has 18 methods. Resulting pTable from this function only contains SwapChain methods if size==18*8.
-        // We probably need a separate way to get Context hooks.
-        // Or we pass pointer to fill.
-        
-        // This function as designed in v1 only returns one table.
-        // We need to refactor or just GetContextVTable separately. But since I reused this function name and sig...
-        // Let's assume this returns SwapChain VTable only.
-        
-        // I will implement Hooking logic inside Install() using context creation there implicitly or helper.
+        memcpy(pTable, vTable, size);
         
         pSwapChain->Release();
         pDevice->Release();
@@ -109,7 +98,6 @@ namespace Core {
         scd.Windowed = TRUE;
         scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
-        // Use ComPtr to auto-release strictness
         Microsoft::WRL::ComPtr<ID3D11Device> pDevice;
         Microsoft::WRL::ComPtr<ID3D11DeviceContext> pContext;
         Microsoft::WRL::ComPtr<IDXGISwapChain> pSwapChain;
@@ -122,15 +110,7 @@ namespace Core {
             return false;
         }
         
-        // Context VTable is at the start of the object
         void** pContextVTable = *reinterpret_cast<void***>(pContext.Get());
-        
-        // Indices Strategy:
-        // VS = 7 (Reliable)
-        // DrawIndexed = 12 (Reliable)
-        // Draw = 13 (Reliable)
-        // Map = 14 (Verified)
-        // Avoid 15/16/17 (Unmap/PS/IA) due to crashes.
         
         int iVS = 7;
         
@@ -138,9 +118,6 @@ namespace Core {
              LOG_ERROR("Failed to hook VS");
         }
         
-        // Draw Hooks removed.
-        
-        // Optional Stages
         if (MH_CreateHook(pContextVTable[62], reinterpret_cast<LPVOID>(&Hook_HSSetConstantBuffers), reinterpret_cast<void**>(&oHSSetConstantBuffers)) != MH_OK) {}
         if (MH_CreateHook(pContextVTable[66], reinterpret_cast<LPVOID>(&Hook_DSSetConstantBuffers), reinterpret_cast<void**>(&oDSSetConstantBuffers)) != MH_OK) {}
         
@@ -148,7 +125,6 @@ namespace Core {
               MH_CreateHook(pContextVTable[22], reinterpret_cast<LPVOID>(&Hook_GSSetConstantBuffers), reinterpret_cast<void**>(&oGSSetConstantBuffers));
         }
         
-        // CS
         if (MH_CreateHook(pContextVTable[71], reinterpret_cast<LPVOID>(&Hook_CSSetConstantBuffers), reinterpret_cast<void**>(&oCSSetConstantBuffers)) != MH_OK) {
               MH_CreateHook(pContextVTable[69], reinterpret_cast<LPVOID>(&Hook_CSSetConstantBuffers), reinterpret_cast<void**>(&oCSSetConstantBuffers));
         }
@@ -157,13 +133,9 @@ namespace Core {
             LOG_ERROR("Failed to hook Map (14)");
         }
         
-        // DISABLED Unmap (15) to prevent crashes.
-        // if (MH_CreateHook(pContextVTable[15], reinterpret_cast<LPVOID>(&Hook_Unmap), reinterpret_cast<void**>(&oUnmap)) != MH_OK) {}
-        
         // UpdateSubresource - disabling to be safe.
         // if (MH_CreateHook(pContextVTable[47], reinterpret_cast<LPVOID>(&Hook_UpdateSubresource), reinterpret_cast<void**>(&oUpdateSubresource)) != MH_OK) {}
 
-    // Resources released by ComPtr destructors
     DestroyWindow(hWnd);
 
     return MH_EnableHook(MH_ALL_HOOKS) == MH_OK;
@@ -191,8 +163,6 @@ namespace Core {
                 if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D11Device), (void**)device.GetAddressOf()))) {
                     device->GetImmediateContext(context.GetAddressOf());
                     
-                    // CubemapManager now uses ComPtrs internally, so it will add its own refs.
-                    // We pass raw pointers, and it will wrap them safely.
                     g_CubemapManager = std::make_unique<Graphics::CubemapManager>(device.Get(), context.Get());
                     
                     m_isInitialized = true;
@@ -201,7 +171,11 @@ namespace Core {
             }
 
             if (g_CubemapManager && g_CubemapManager->IsRecording()) {
-                g_CubemapManager->ExecuteCaptureCycle(pSwapChain);
+                // If PresentHook returns false, we suppress the Present call
+                if (!g_CubemapManager->PresentHook(pSwapChain)) {
+                     // We return S_OK to simulate success to the game
+                     return S_OK;
+                }
             }
         } catch (const std::exception& e) {
              LOG_ERROR("Exception in Hook_Present: ", e.what());
@@ -241,9 +215,7 @@ namespace Core {
 
             if (should_log) {
                 bool hasMgr = (g_CubemapManager != nullptr);
-                bool isRec = (hasMgr && g_CubemapManager->IsRecording());
-                Camera::CameraController* cam = (hasMgr ? g_CubemapManager->GetCameraController() : nullptr);
-               // LOG_INFO("Hook_", stageName, ": Mgr=", hasMgr, " Rec=", isRec, " Cam=", (cam!=nullptr), " Slot=", StartSlot, " Num=", NumBuffers);
+               // LOG_INFO("Hook_", stageName, ": Mgr=", hasMgr, " Slot=", StartSlot, " Num=", NumBuffers);
             }
 
             ID3D11Buffer* newBuffers[14];
@@ -260,8 +232,6 @@ namespace Core {
 
                     for (UINT i = 0; i < count; ++i) {
                         if (newBuffers[i]) {
-
-                             // Actually, let's fix the call properly.
                              ID3D11Buffer* replacementBuf = camCtrl->CheckAndGetReplacementBuffer(pContext, newBuffers[i]);
                              if (replacementBuf) {
                                  newBuffers[i] = replacementBuf;
@@ -321,9 +291,6 @@ HRESULT __stdcall Hooks::Hook_Map(ID3D11DeviceContext* pContext, ID3D11Resource*
         // Just call original safely
         oUnmap(pContext, pResource, Subresource);
     }
-
-    // Draw Hooks Removed due to instability. 
-    // We rely on ForceUpdateActiveCamera in CubemapManager::ExecuteCaptureCycle.
 
     void __stdcall Hooks::Hook_UpdateSubresource(ID3D11DeviceContext* pContext, ID3D11Resource* pDstResource, UINT DstSubresource, const D3D11_BOX* pDstBox, const void* pSrcData, UINT SrcRowPitch, UINT SrcDepthPitch) {
         try {
