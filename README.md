@@ -8,8 +8,6 @@
 
 Designed for reverse engineers and graphics programmers, it utilizes **DLL Injection**, **API Hooking**, **Compute Shaders**, and **Zero-Copy Hardware Encoding** to record panoramic video without accessing the game's source code.
 
-
-
 > [!WARNING]
 > **Development Status**: This project is currently in a **Proof of Concept / Alpha** stage.
 > *   **Implemented**: Basic DLL injection mechanism, DirectX 11 hooking infrastructure (MinHook), and foundational FFmpeg integration.
@@ -207,3 +205,12 @@ This software is for educational and research purposes only. Using this tool in 
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+### Third-Party Licenses
+
+This project makes use of the following third-party libraries:
+
+*   **MinHook**: Developed by TsudaKageyu. Licensed under the [BSD 2-Clause License](https://github.com/TsudaKageyu/minhook/blob/master/LICENSE.txt).
+*   **FFmpeg**: Licensed under the [GNU General Public License (GPL) version 3](https://www.gnu.org/licenses/gpl-3.0.html). 
+    *   This software uses code of <a href=http://ffmpeg.org>FFmpeg</a> licensed under the <a href=http://www.gnu.org/licenses/gpl.html>GPLv3</a> and its source can be downloaded [here](https://ffmpeg.org/download.html).
+*   **DirectXMath**: Developed by Microsoft. Licensed under the [MIT License](https://github.com/microsoft/DirectXMath/blob/main/LICENSE).
