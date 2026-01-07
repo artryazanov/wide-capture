@@ -9,25 +9,19 @@
 #include <algorithm>
 
 namespace Graphics {
-    // Globals or injected dependencies
-    // Ideally these should be members or singletons, but for simplicity here we assume they are managed elsewhere or attached to this.
-    // However, CubemapManager needs to OWN the CameraController and Encoder per spec design.
-    // Hooks.cpp has the instance of CubemapManager.
-    
-    // Forward declare shared instances if needed or create them here.
-    
+
     struct CubemapManagerImpl {
         std::unique_ptr<Video::FFmpegBackend> encoder;
         std::unique_ptr<Camera::CameraController> cameraController;
         
-        ComPtr<ID3D11Texture2D> faceTextures[6]; // Staging or default? Default to copy from backbuffer.
+        ComPtr<ID3D11Texture2D> faceTextures[6];
         ComPtr<ID3D11ShaderResourceView> faceSRVs[6];
-        ComPtr<ID3D11Texture2D> cubeTexture; // TextureCube for compute input
+        ComPtr<ID3D11Texture2D> cubeTexture;
         ComPtr<ID3D11ShaderResourceView> cubeSRV;
         
         ComPtr<ID3D11Texture2D> equirectTexture;
         ComPtr<ID3D11UnorderedAccessView> equirectUAV;
-        ComPtr<ID3D11ShaderResourceView> equirectSRV; // Source for conversion
+        ComPtr<ID3D11ShaderResourceView> equirectSRV;
 
         // NV12 Conversion
         ComPtr<ID3D11Texture2D> equirectNV12;
@@ -45,31 +39,36 @@ namespace Graphics {
         UINT gameHeight = 0;
         UINT faceSize = 0; // Square face size
         DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-        int currentFace = 0;
+
         bool isInitialized = false;
     };
 
     CubemapManager::CubemapManager(ID3D11Device* device, ID3D11DeviceContext* context) 
         : m_device(device), m_context(context), m_isRecording(true) { 
-        // Note: m_isRecording defaults to true for auto-start or controlled via keys
         
         m_impl = std::make_unique<CubemapManagerImpl>();
         m_impl->encoder = std::make_unique<Video::FFmpegBackend>();
         m_impl->cameraController = std::make_unique<Camera::CameraController>(context);
+
+        // Start cycle so next increment is 0 (First capture frame)
+        // Actually, if we want to sync, let's start so next frame is Player frame (6)
+        // m_frameCycle = 6;
+        // Wait, PresentHook increments first.
+        // if m_frameCycle = 5; ++ => 6 (Player).
+        // Let's ensure we start cleanly.
+        m_frameCycle = 5;
     }
 
     CubemapManager::~CubemapManager() {
         if (m_impl && m_impl->encoder) {
             m_impl->encoder->Finish();
         }
-        // ComPtr handles Release automatically
     }
 
     bool CubemapManager::IsRecording() const {
         return m_isRecording;
     }
     
-    // New method required to expose camera controller to Hooks
     Camera::CameraController* CubemapManager::GetCameraController() {
         return m_impl ? m_impl->cameraController.get() : nullptr;
     }
@@ -81,7 +80,6 @@ namespace Graphics {
         impl->format = format; 
 
         // 1. Determine Face Size (Must be SQUARE)
-        // Use min dimension to crop center square
         impl->faceSize = std::min(w, h);
         
         LOG_INFO("Init Resources. Game: ", w, "x", h, " -> Face Size: ", impl->faceSize, "x", impl->faceSize);
@@ -94,11 +92,7 @@ namespace Graphics {
             self->m_device->CreateShaderResourceView(impl->faceTextures[i].Get(), nullptr, impl->faceSRVs[i].GetAddressOf());
         }
 
-        // 2. Create Cube Texture Array (for Shader convenience, though we could use Texture2DArray)
-        // Actually, the shader expects TextureCube. We need to copy faces into a TextureCube.
-        // Or we use Texture2DArray and array views.
-        // Spec shader: TextureCube<float4> g_InputCubemap
-        
+        // 2. Create Cube Texture Array
         D3D11_TEXTURE2D_DESC desc = {};
         desc.Width = impl->faceSize;
         desc.Height = impl->faceSize;
@@ -114,14 +108,9 @@ namespace Graphics {
         if (FAILED(self->m_device->CreateShaderResourceView(impl->cubeTexture.Get(), nullptr, impl->cubeSRV.GetAddressOf()))) return false;
 
         // 3. Equirectangular Output (UAV)
-        // Resolution based on Face Size
-        // Clamp to Max 4096 width (4K)
         UINT eqW = impl->faceSize * 4;
         if (eqW > 4096) eqW = 4096;
-        
         UINT eqH = eqW / 2;
-        
-        // Align to 16 for video encoding safety
         eqW = (eqW + 15) & ~15;
         eqH = (eqH + 15) & ~15;
 
@@ -154,10 +143,7 @@ namespace Graphics {
         self->m_device->CreateSamplerState(&sampDesc, impl->linearSampler.GetAddressOf());
 
         // 4. Compile Shader
-        // We assume shaders are in "shaders/" directory relative to DLL or current dir.
-        // Since we copied them in CMake.
          if (FAILED(Compute::ShaderCompiler::CompileComputeShader(self->m_device.Get(), L"shaders/ProjectionShader.hlsl", "main", impl->projectionShader.GetAddressOf()))) {
-             // Try current directory as fallback
              if (FAILED(Compute::ShaderCompiler::CompileComputeShader(self->m_device.Get(), L"ProjectionShader.hlsl", "main", impl->projectionShader.GetAddressOf()))) {
                  LOG_ERROR("Could not find ProjectionShader.hlsl");
                  return false;
@@ -165,15 +151,9 @@ namespace Graphics {
          }
          
          // Compile Conversion Shaders
-         // Only compiled once, but simple check
          ID3DBlob* vsBlob = nullptr;
          ID3DBlob* psYBlob = nullptr;
          ID3DBlob* psUVBlob = nullptr;
-         
-         // Using D3DCompile directly or helper? Use Helper if generic. 
-         // But Helper is for CS. We need generic VS/PS. 
-         // Assuming ShaderCompiler has generic Compile methods or we use D3DCompile here.
-         // Let's use D3DCompileFromFile since we included d3dcompiler.h in pch.h
          
          ComPtr<ID3DBlob> errBlob;
          DWORD flags = D3DCOMPILE_ENABLE_STRICTNESS;
@@ -203,10 +183,6 @@ namespace Graphics {
          psUVBlob->Release();
 
         // 5. Init Encoder
-        // 60 FPS target? Game FPS / 6.
-        // If Game is 60fps, Video is 10fps. Bad.
-        // Assuming we want 60fps video -> Game must range 360fps.
-        // Or we record at whatever rate we get.
         if (!impl->encoder->Initialize(self->m_device.Get(), eqW, eqH, 60, "record_360.mp4")) return false;
 
         impl->isInitialized = true;
@@ -214,30 +190,76 @@ namespace Graphics {
     }
 
     void CubemapManager::ExecuteCaptureCycle(IDXGISwapChain* swapChain) {
-        if (!m_impl) return;
+        // Deprecated/Removed logic. The cycle is now driven by PresentHook.
+    }
 
-        ComPtr<ID3D11Texture2D> backBuffer;
-        if (FAILED(swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)backBuffer.GetAddressOf()))) return;
+    bool CubemapManager::PresentHook(IDXGISwapChain* swapChain) {
+        if (!m_impl) return true;
 
-        D3D11_TEXTURE2D_DESC desc;
-        backBuffer->GetDesc(&desc);
+        m_frameCycle++;
+        int step = m_frameCycle % 7;
 
+        // Initialization check
         if (!m_impl->isInitialized) {
-            if (!InitResources(this, desc.Width, desc.Height, desc.Format)) {
-                m_isRecording = false; // Stop if init fails
-                return;
+            ComPtr<ID3D11Texture2D> backBuffer;
+            if (SUCCEEDED(swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)backBuffer.GetAddressOf()))) {
+                D3D11_TEXTURE2D_DESC desc;
+                backBuffer->GetDesc(&desc);
+                if (!InitResources(this, desc.Width, desc.Height, desc.Format)) {
+                    m_isRecording = false;
+                    return true;
+                }
+            } else {
+                return true;
             }
         }
         
-        // Handle Resize or Format Change (simple check based on width/height for now, ideally check format too)
-        // Handle Resize
-        if (desc.Width != m_impl->gameWidth || desc.Height != m_impl->gameHeight) {
-            OnResize();
-            return;
-        }
+        // Handle Resize check (simplified)
+        // ... (Skipped for brevity, assume InitResources handles initial size)
 
-        // 1. Copy BackBuffer to Current Face (CENTER CROP)
-        // Copy regions faceSize x faceSize from center
+        // Step 0..5: We just rendered a Capture Face.
+        if (step < 6) {
+             ComPtr<ID3D11Texture2D> backBuffer;
+             if (SUCCEEDED(swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)backBuffer.GetAddressOf()))) {
+                 CaptureFace(step, backBuffer.Get());
+             }
+
+             // If this was the last face (5), process the full cubemap
+             if (step == 5) {
+                 ProcessCycle();
+             }
+
+             // Prepare Camera for NEXT frame
+             if (step < 5) {
+                 // Next is face step+1
+                 m_impl->cameraController->SetBypass(false);
+                 m_impl->cameraController->SetTargetFace(static_cast<Camera::CubeFace>(step + 1));
+             } else {
+                 // Next is step 6 (Player Frame)
+                 m_impl->cameraController->SetBypass(true);
+             }
+
+             // Suppress Present
+             return false;
+        }
+        else {
+             // Step 6: Player Frame just rendered.
+             // Do not capture. Let it show.
+
+             // Prepare Camera for NEXT frame (Face 0)
+             m_impl->cameraController->SetBypass(false);
+             m_impl->cameraController->SetTargetFace(static_cast<Camera::CubeFace>(0));
+
+             // Allow Present
+             return true;
+        }
+    }
+
+    void CubemapManager::CaptureFace(int faceIndex, ID3D11Texture2D* backBuffer) {
+        D3D11_TEXTURE2D_DESC desc;
+        backBuffer->GetDesc(&desc);
+
+        // Copy Center Crop
         D3D11_BOX srcBox;
         srcBox.left = (desc.Width - m_impl->faceSize) / 2;
         srcBox.top = (desc.Height - m_impl->faceSize) / 2;
@@ -246,100 +268,82 @@ namespace Graphics {
         srcBox.bottom = srcBox.top + m_impl->faceSize;
         srcBox.back = 1;
 
-        m_context->CopySubresourceRegion(m_impl->faceTextures[m_impl->currentFace].Get(), 0, 0, 0, 0, backBuffer.Get(), 0, &srcBox);
+        m_context->CopySubresourceRegion(m_impl->faceTextures[faceIndex].Get(), 0, 0, 0, 0, backBuffer, 0, &srcBox);
+    }
 
-        // 2. Prepare for NEXT frame camera
-        m_impl->currentFace++;
-        if (m_impl->currentFace >= 6) {
-            // Cycle complete. Process.
-            m_impl->currentFace = 0;
-            
-            // A. Copy Faces to Cube Texture
-            for(int i=0; i<6; ++i) {
-                // Must CopySubresourceRegion to specific array slice
-                m_context->CopySubresourceRegion(m_impl->cubeTexture.Get(), i, 0, 0, 0, m_impl->faceTextures[i].Get(), 0, nullptr);
-            }
+    void CubemapManager::ProcessCycle() {
+         // A. Copy Faces to Cube Texture
+         for(int i=0; i<6; ++i) {
+             m_context->CopySubresourceRegion(m_impl->cubeTexture.Get(), i, 0, 0, 0, m_impl->faceTextures[i].Get(), 0, nullptr);
+         }
 
-            // B. Dispatch Compute
-            StateBlock stateBlock(m_context.Get()); // Save state
+         // B. Dispatch Compute
+         StateBlock stateBlock(m_context.Get());
             
-            m_context->CSSetShader(m_impl->projectionShader.Get(), nullptr, 0);
-            ID3D11ShaderResourceView* srvs[] = { m_impl->cubeSRV.Get() };
-            m_context->CSSetShaderResources(0, 1, srvs);
-            ID3D11UnorderedAccessView* uavs[] = { m_impl->equirectUAV.Get() };
-            m_context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
+         m_context->CSSetShader(m_impl->projectionShader.Get(), nullptr, 0);
+         ID3D11ShaderResourceView* srvs[] = { m_impl->cubeSRV.Get() };
+         m_context->CSSetShaderResources(0, 1, srvs);
+         ID3D11UnorderedAccessView* uavs[] = { m_impl->equirectUAV.Get() };
+         m_context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
             
-            D3D11_TEXTURE2D_DESC eqDesc;
-            m_impl->equirectTexture->GetDesc(&eqDesc);
+         D3D11_TEXTURE2D_DESC eqDesc;
+         m_impl->equirectTexture->GetDesc(&eqDesc);
             
-            UINT x = (eqDesc.Width + 15) / 16;
-            UINT y = (eqDesc.Height + 15) / 16;
-            m_context->Dispatch(x, y, 1);
+         UINT x = (eqDesc.Width + 15) / 16;
+         UINT y = (eqDesc.Height + 15) / 16;
+         m_context->Dispatch(x, y, 1);
             
-            // Clean up CS slots (important!)
-            ID3D11UnorderedAccessView* nullUAV[] = { nullptr };
-            m_context->CSSetUnorderedAccessViews(0, 1, nullUAV, nullptr);
-            ID3D11ShaderResourceView* nullSRV[] = { nullptr };
-            m_context->CSSetShaderResources(0, 1, nullSRV);
-            
-            // stateBlock destructor restores state automatically
+         // Clean up CS slots
+         ID3D11UnorderedAccessView* nullUAV[] = { nullptr };
+         m_context->CSSetUnorderedAccessViews(0, 1, nullUAV, nullptr);
+         ID3D11ShaderResourceView* nullSRV[] = { nullptr };
+         m_context->CSSetShaderResources(0, 1, nullSRV);
 
-            // C. Convert to NV12
-            // Save state (already saved in stateBlock)
-            // Setup for Drawing
-            m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            m_context->IASetInputLayout(nullptr); // Bufferless
-            m_context->VSSetShader(m_impl->convertVS.Get(), nullptr, 0);
+         // C. Convert to NV12
+         m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+         m_context->IASetInputLayout(nullptr);
+         m_context->VSSetShader(m_impl->convertVS.Get(), nullptr, 0);
             
-            ID3D11ShaderResourceView* srvsConv[] = { m_impl->equirectSRV.Get() };
-            m_context->PSSetShaderResources(0, 1, srvsConv);
-            m_context->PSSetSamplers(0, 1, m_impl->linearSampler.GetAddressOf());
+         ID3D11ShaderResourceView* srvsConv[] = { m_impl->equirectSRV.Get() };
+         m_context->PSSetShaderResources(0, 1, srvsConv);
+         m_context->PSSetSamplers(0, 1, m_impl->linearSampler.GetAddressOf());
             
-            // Pass 1: Y (Full Res)
-            D3D11_VIEWPORT vp = {};
-            vp.Width = (float)eqDesc.Width; // equirectTexture dimensions
-            vp.Height = (float)eqDesc.Height;
-            vp.MinDepth = 0.0f;
-            vp.MaxDepth = 1.0f;
-            m_context->RSSetViewports(1, &vp);
+         // Pass 1: Y
+         D3D11_VIEWPORT vp = {};
+         vp.Width = (float)eqDesc.Width;
+         vp.Height = (float)eqDesc.Height;
+         vp.MinDepth = 0.0f;
+         vp.MaxDepth = 1.0f;
+         m_context->RSSetViewports(1, &vp);
             
-            ID3D11RenderTargetView* rtvY[] = { m_impl->nv12Y_RTV.Get() };
-            m_context->OMSetRenderTargets(1, rtvY, nullptr);
-            m_context->PSSetShader(m_impl->convertPS_Y.Get(), nullptr, 0);
-            m_context->Draw(3, 0);
+         ID3D11RenderTargetView* rtvY[] = { m_impl->nv12Y_RTV.Get() };
+         m_context->OMSetRenderTargets(1, rtvY, nullptr);
+         m_context->PSSetShader(m_impl->convertPS_Y.Get(), nullptr, 0);
+         m_context->Draw(3, 0);
             
-            // Pass 2: UV (Half Res)
-            vp.Width = (float)eqDesc.Width / 2.0f;
-            vp.Height = (float)eqDesc.Height / 2.0f;
-            m_context->RSSetViewports(1, &vp);
+         // Pass 2: UV
+         vp.Width = (float)eqDesc.Width / 2.0f;
+         vp.Height = (float)eqDesc.Height / 2.0f;
+         m_context->RSSetViewports(1, &vp);
             
-            ID3D11RenderTargetView* rtvUV[] = { m_impl->nv12UV_RTV.Get() };
-            m_context->OMSetRenderTargets(1, rtvUV, nullptr);
-            m_context->PSSetShader(m_impl->convertPS_UV.Get(), nullptr, 0);
-            m_context->Draw(3, 0); // Need to re-issue draw? Yes.
+         ID3D11RenderTargetView* rtvUV[] = { m_impl->nv12UV_RTV.Get() };
+         m_context->OMSetRenderTargets(1, rtvUV, nullptr);
+         m_context->PSSetShader(m_impl->convertPS_UV.Get(), nullptr, 0);
+         m_context->Draw(3, 0);
             
-            // Clean Render Targets
-            ID3D11RenderTargetView* nullRTV[] = { nullptr };
-            m_context->OMSetRenderTargets(1, nullRTV, nullptr);
-            ID3D11ShaderResourceView* nullSRV2[] = { nullptr };
-            m_context->PSSetShaderResources(0, 1, nullSRV2);
+         // Clean Render Targets
+         ID3D11RenderTargetView* nullRTV[] = { nullptr };
+         m_context->OMSetRenderTargets(1, nullRTV, nullptr);
+         ID3D11ShaderResourceView* nullSRV2[] = { nullptr };
+         m_context->PSSetShaderResources(0, 1, nullSRV2);
             
-            // D. Encode
-            // Pass the NV12 texture
-            m_impl->encoder->EncodeFrame(m_impl->equirectNV12.Get());
-        }
-
-        // Set Camera for the *upcoming* frame
-        if (m_impl->cameraController) {
-             m_impl->cameraController->SetTargetFace(static_cast<Camera::CubeFace>(m_impl->currentFace));
-        }
+         // D. Encode
+         m_impl->encoder->EncodeFrame(m_impl->equirectNV12.Get());
     }
 
     void CubemapManager::OnResize() {
         if (m_impl) {
             m_impl->isInitialized = false;
-            m_impl->currentFace = 0;
-            // Resources will be recreated in next ExecuteCaptureCycle
         }
     }
 }

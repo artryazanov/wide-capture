@@ -8,10 +8,16 @@ namespace Camera {
 
     void CameraController::Reset() {
         m_bufferCache.clear();
+        m_upDetected = false;
+        m_worldUp = DirectX::XMVectorSet(0, 1, 0, 0);
     }
 
     void CameraController::SetTargetFace(CubeFace face) {
         m_currentFace = face;
+    }
+
+    void CameraController::SetBypass(bool bypass) {
+        m_bypass = bypass;
     }
 
     // Thread-local guard to prevent recursion and self-tracking
@@ -30,9 +36,6 @@ namespace Camera {
         if (dim != D3D11_RESOURCE_DIMENSION_BUFFER) return;
         
         std::lock_guard<std::mutex> lock(m_cacheMutex);
-
-        static int usLog = 0;
-        if (usLog < 10) { LOG_INFO("OnUpdateSubresource: ", resource); usLog++; }
 
         auto& state = m_bufferCache[resource];
         
@@ -73,10 +76,6 @@ namespace Camera {
          if (m_readbackBuffer && resource == m_readbackBuffer.Get()) return;
 
          std::lock_guard<std::mutex> lock(m_cacheMutex);
-
-         static int mapLog = 0;
-         if (mapLog < 10) { LOG_INFO("OnMap: ", resource); mapLog++; }
-
          m_bufferCache[resource].mappedPtr = mapped->pData;
     }
 
@@ -88,67 +87,46 @@ namespace Camera {
 
     ID3D11Buffer* CameraController::CheckAndGetReplacementBuffer(ID3D11DeviceContext* context, ID3D11Buffer* originalBuffer) {
         if (!originalBuffer) return nullptr;
+        // If bypass is on (Player Frame), do not interfere
+        if (m_bypass) return nullptr;
         
         std::lock_guard<std::mutex> lock(m_cacheMutex);
 
         auto it = m_bufferCache.find(originalBuffer);
         
         if (it == m_bufferCache.end() || it->second.cpuData.empty()) {
-             // CACHE MISS: Force Read from GPU
              ForceReadBuffer(originalBuffer);
-             
-             // Re-check
              it = m_bufferCache.find(originalBuffer);
              if (it == m_bufferCache.end() || it->second.cpuData.empty()) {
                  return nullptr;
              }
         }
 
-        // 'it' is valid here
         auto& state = it->second;
         const float* data = (const float*)state.cpuData.data();
         size_t floatCount = state.cpuData.size() / sizeof(float);
         
         if (floatCount < 16) return nullptr;
 
-        static int debugLogLimit = 0;
-        if (debugLogLimit < 0) { // Disabled
-            // Log first 16 floats of the first few buffers to see what we are dealing with
-            std::string vals = "";
-            for(int k=0; k<16 && k<floatCount; ++k) vals += std::to_string(data[k]) + " ";
-            LOG_INFO("Buf inspect (", originalBuffer, "): ", vals);
-            debugLogLimit++;
-        }
-
         // 2. Detection (Heuristic)
         // Check stored flag first
         bool isCamera = state.isCamera;
         
+        // If not yet detected, scan
         if (!isCamera) {
             // Heuristic Check
             for (size_t i = 0; i <= floatCount - 16; i += 4) { 
                  if (IsProjectionMatrix(data + i)) {
                       state.isCamera = true;
+                      state.projMatrixOffset = (int)i; // Cache Offset
                       isCamera = true;
-                      
-                      static std::unordered_map<ID3D11Buffer*, bool> loggedBufs;
-                      if (!loggedBufs[originalBuffer]) {
-                          LOG_INFO("Camera Buffer (Proj) Detected! Ptr: ", originalBuffer, " Size: ", state.cpuData.size(), " Offset: ", i);
-                          loggedBufs[originalBuffer] = true;
-                      }
                       break;
                  }
                  
-                 // Also check for View Matrix to detect buffers that ONLY have View
                  if (IsViewMatrix(data + i, nullptr)) {
                       state.isCamera = true;
+                      state.viewMatrixOffset = (int)i; // Cache Offset
                       isCamera = true;
-                      
-                      static std::unordered_map<ID3D11Buffer*, bool> loggedBufsView;
-                      if (!loggedBufsView[originalBuffer]) {
-                          LOG_INFO("Camera Buffer (View) Detected! Ptr: ", originalBuffer, " Size: ", state.cpuData.size(), " Offset: ", i);
-                          loggedBufsView[originalBuffer] = true;
-                      }
                       break;
                  }
             }
@@ -163,9 +141,11 @@ namespace Camera {
 
     ID3D11Buffer* CameraController::GetReplacementBuffer(ID3D11Resource* originalBuffer, const float* originalData) {
         if (!originalBuffer) return nullptr;
+        if (m_bypass) return nullptr;
         
         auto& state = m_bufferCache[originalBuffer];
         size_t size = state.cpuData.size();
+        size_t floatCount = size / sizeof(float);
         
         // Ensure replacement buffer exists and is large enough
         if (state.replacementBuffer) {
@@ -199,70 +179,45 @@ namespace Camera {
             ScopedHookIgnore ignore; 
             if (SUCCEEDED(m_context->Map(state.replacementBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
                  memcpy(mapped.pData, originalData, size);
-                 
                  float* outData = (float*)mapped.pData;
-                 size_t floatCount = size / sizeof(float);
                  
-                  // Scan for ANY Projection or View matrices
-                  for (size_t i = 0; i <= floatCount - 16; i += 4) {
-                      float* searchPtr = outData + i;
-                      
-                      if (IsProjectionMatrix((const float*)(originalData + i))) {
-                          // Found Projection
-                          bool isRH = IsRightHandedProjection((const float*)(originalData + i));
-                          m_isRH = isRH; // Cache for View Matrix
+                 // Use Cached Offsets if available
+                 if (state.projMatrixOffset >= 0 && (state.projMatrixOffset + 16) <= floatCount) {
+                     float* searchPtr = outData + state.projMatrixOffset;
+                     bool isRH = IsRightHandedProjection((const float*)(originalData + state.projMatrixOffset));
+                     m_isRH = isRH;
 
-                          // Log for verification
-                          static bool loggedProj = false;
-                          if (!loggedProj) {
-                              const float* p = (const float*)(originalData + i);
-                              LOG_INFO("Found Projection Matrix! RH=", isRH, " [10]=", p[10], " [11]=", p[11]);
-                              loggedProj = true;
-                          }
+                     DirectX::XMMATRIX newProj;
+                     if (isRH) {
+                          newProj = DirectX::XMMatrixPerspectiveFovRH(DirectX::XM_PIDIV2, 1.0f, 0.1f, 1000.0f);
+                     } else {
+                          newProj = DirectX::XMMatrixPerspectiveFovLH(DirectX::XM_PIDIV2, 1.0f, 0.1f, 1000.0f);
+                     }
+                     DirectX::XMStoreFloat4x4((DirectX::XMFLOAT4X4*)searchPtr, newProj);
+                 }
 
-                          DirectX::XMMATRIX projMat = DirectX::XMLoadFloat4x4((const DirectX::XMFLOAT4X4*)(originalData + i));
-                          // We use the cached m_isRH inside the helper or just call the right one here.
-                          // Let's call the right one here for clarity.
-                          DirectX::XMMATRIX newProj;
-                          if (isRH) {
-                               newProj = DirectX::XMMatrixPerspectiveFovRH(DirectX::XM_PIDIV2, 1.0f, 0.1f, 1000.0f);
-                          } else {
-                               newProj = DirectX::XMMatrixPerspectiveFovLH(DirectX::XM_PIDIV2, 1.0f, 0.1f, 1000.0f);
-                          }
-                          DirectX::XMStoreFloat4x4((DirectX::XMFLOAT4X4*)searchPtr, newProj);
-                      }
-                      
-                      bool isTransposed = false;
-                      if (IsViewMatrix((const float*)(originalData + i), &isTransposed)) {
-                           // Found View -> Replace with Face View
-                           DirectX::XMMATRIX viewMat = DirectX::XMLoadFloat4x4((const DirectX::XMFLOAT4X4*)(originalData + i));
-                           
-                           if (isTransposed) {
-                               viewMat = DirectX::XMMatrixTranspose(viewMat);
-                           }
+                 if (state.viewMatrixOffset >= 0 && (state.viewMatrixOffset + 16) <= floatCount) {
+                     float* searchPtr = outData + state.viewMatrixOffset;
+                     bool isTransposed = false;
+                     // Double check orientation
+                     IsViewMatrix((const float*)(originalData + state.viewMatrixOffset), &isTransposed);
 
-                           // Log Camera Position extraction once per detected buffer/face
-                           static int viewLog = 0;
-                           if (viewLog < 20) {
-                               DirectX::XMVECTOR det;
-                               DirectX::XMMATRIX invView = DirectX::XMMatrixInverse(&det, viewMat);
-                               DirectX::XMFLOAT4 eyePos;
-                               DirectX::XMStoreFloat4(&eyePos, invView.r[3]);
-                               
-                               LOG_INFO("ViewMat Detected! Offset=", i, " Transposed=", isTransposed, 
-                                        " Eye=(", eyePos.x, ",", eyePos.y, ",", eyePos.z, ") Face=", (int)m_currentFace);
-                               viewLog++;
-                           }
+                     DirectX::XMMATRIX viewMat = DirectX::XMLoadFloat4x4((const DirectX::XMFLOAT4X4*)(originalData + state.viewMatrixOffset));
+                     if (isTransposed) viewMat = DirectX::XMMatrixTranspose(viewMat);
 
-                           DirectX::XMMATRIX newView = GetViewMatrixForFace(viewMat, m_currentFace, m_isRH);
-                           
-                           if (isTransposed) {
-                               newView = DirectX::XMMatrixTranspose(newView);
-                           }
-                           
-                           DirectX::XMStoreFloat4x4((DirectX::XMFLOAT4X4*)searchPtr, newView);
-                       }
-                   }
+                     // 1. Detect World Up from Game View (Once)
+                     if (!m_upDetected) DetectWorldUp(viewMat);
+
+                     // 2. Generate New View using World Aligned logic
+                     DirectX::XMMATRIX newView = GetViewMatrixForFace(viewMat, m_currentFace, m_isRH);
+
+                     if (isTransposed) newView = DirectX::XMMatrixTranspose(newView);
+
+                     DirectX::XMStoreFloat4x4((DirectX::XMFLOAT4X4*)searchPtr, newView);
+                 }
+
+                 // If no offsets cached (shouldn't happen if isCamera=true), we could scan as fallback,
+                 // but for now we rely on the cached offsets from detection phase.
 
                  m_context->Unmap(state.replacementBuffer.Get(), 0);
             }
@@ -271,82 +226,155 @@ namespace Camera {
         return state.replacementBuffer.Get();
     }
     
+    void CameraController::DetectWorldUp(DirectX::XMMATRIX viewMat) {
+        DirectX::XMVECTOR det;
+        DirectX::XMMATRIX invView = DirectX::XMMatrixInverse(&det, viewMat);
+
+        // In Inverse View, the columns are Right, Up, Look, Eye.
+        // Row 1 (index 0-3) is Right (or index 0 of rows if transposed).
+        // Since we loaded it into XMMATRIX, it handles row/col major if we respect logic.
+        // XMMatrixInverse returns inverse.
+
+        // Up Vector is the second row of the inverse matrix (since DX math uses Row Vectors, but wait...)
+        // In DX Math (Row Major):
+        // View = [ R.x  U.x  L.x  0 ]
+        //        [ R.y  U.y  L.y  0 ] ...
+        // No, standard View Matrix constructs:
+        // Rx Ry Rz -dot(R,E)
+        // Ux Uy Uz -dot(U,E)
+        // Lx Ly Lz -dot(L,E)
+        // 0  0  0  1
+        //
+        // Inverse View (Camera World Matrix):
+        // Rx Ux Lx Ex
+        // Ry Uy Ly Ey
+        // Rz Uz Lz Ez
+        // 0  0  0  1
+        //
+        // So Up vector is the 2nd row (r[1]).
+
+        DirectX::XMVECTOR up = invView.r[1];
+
+        // Normalize just in case
+        up = DirectX::XMVector3Normalize(up);
+
+        float y = DirectX::XMVectorGetY(up);
+        float z = DirectX::XMVectorGetZ(up);
+
+        if (std::abs(z) > std::abs(y)) {
+            // Z-Up (e.g. 0,0,1)
+            if (z > 0) m_worldUp = DirectX::XMVectorSet(0, 0, 1, 0);
+            else       m_worldUp = DirectX::XMVectorSet(0, 0, -1, 0);
+            LOG_INFO("Detected Z-Up World");
+        } else {
+            // Y-Up (e.g. 0,1,0)
+            if (y > 0) m_worldUp = DirectX::XMVectorSet(0, 1, 0, 0);
+            else       m_worldUp = DirectX::XMVectorSet(0, -1, 0, 0);
+            LOG_INFO("Detected Y-Up World");
+        }
+        m_upDetected = true;
+    }
+
     DirectX::XMMATRIX CameraController::GetViewMatrixForFace(DirectX::XMMATRIX originalView, CubeFace face, bool isRH) {
         DirectX::XMVECTOR det;
         DirectX::XMMATRIX invView = DirectX::XMMatrixInverse(&det, originalView);
         DirectX::XMVECTOR eyePos = invView.r[3]; 
 
-        // World Up vector
-        DirectX::XMVECTOR up = DirectX::XMVectorSet(0, 1, 0, 0);
-        DirectX::XMVECTOR forward;
+        // World Up vector (Auto-detected)
+        DirectX::XMVECTOR worldUp = m_worldUp;
 
-        // Basis Vectors
-        DirectX::XMVECTOR vRight = DirectX::XMVectorSet(1, 0, 0, 0);
-        DirectX::XMVECTOR vLeft  = DirectX::XMVectorSet(-1, 0, 0, 0);
-        DirectX::XMVECTOR vUp    = DirectX::XMVectorSet(0, 1, 0, 0);
-        DirectX::XMVECTOR vDown  = DirectX::XMVectorSet(0, -1, 0, 0);
-        DirectX::XMVECTOR vFront = DirectX::XMVectorSet(0, 0, 1, 0);
-        DirectX::XMVECTOR vBack  = DirectX::XMVectorSet(0, 0, -1, 0);
+        // To construct the 6 faces aligned to World, we need a standard set of directions.
+        // If Y-Up:
+        //   Front: +Z (LH) or -Z (RH)
+        //   Right: +X
+        //   Up:    +Y
+        // If Z-Up:
+        //   Front: +Y? or +X? Usually +Y is North/Forward in Z-Up systems (Unreal).
+        //   Right: +X
+        //   Up:    +Z
 
-        if (isRH) {
-             // In RH: Forward is -Z, Right is +X, Up is +Y
-             vFront = DirectX::XMVectorSet(0, 0, -1, 0);
-             vBack  = DirectX::XMVectorSet(0, 0, 1, 0);
+        // Let's define "North" as +Z (if Y-up) or +Y (if Z-up).
+        // Actually, for the panorama to be stable, we just need *consistent* orthogonal basis.
+        // We will stick to the Enum mapping:
+        // Face 0 (Right): +X
+        // Face 1 (Left):  -X
+        // Face 2 (Up):    +Y (or +Z if Z-up)
+        // Face 3 (Down):  -Y (or -Z if Z-up)
+        // Face 4 (Front): +Z (or +Y if Z-up)
+        // Face 5 (Back):  -Z (or -Y if Z-up)
+
+        bool isZUp = (std::abs(DirectX::XMVectorGetZ(worldUp)) > 0.9f);
+
+        DirectX::XMVECTOR vRight, vLeft, vUp, vDown, vFront, vBack;
+
+        if (isZUp) {
+             // Z-Up System
+             // Up is +Z
+             // Front is +Y (Standard for Z-Up games like Unreal)
+             // Right is +X
+             vRight = DirectX::XMVectorSet(1, 0, 0, 0);
+             vLeft  = DirectX::XMVectorSet(-1, 0, 0, 0);
+             vUp    = DirectX::XMVectorSet(0, 0, 1, 0); // Sky
+             vDown  = DirectX::XMVectorSet(0, 0, -1, 0);
+             vFront = DirectX::XMVectorSet(0, 1, 0, 0); // Horizon
+             vBack  = DirectX::XMVectorSet(0, -1, 0, 0);
+        } else {
+             // Y-Up System (Standard DX/OpenGL/Unity)
+             // Up is +Y
+             // Front is +Z (LH) or -Z (RH)
+             // Right is +X
+             vRight = DirectX::XMVectorSet(1, 0, 0, 0);
+             vLeft  = DirectX::XMVectorSet(-1, 0, 0, 0);
+             vUp    = DirectX::XMVectorSet(0, 1, 0, 0);
+             vDown  = DirectX::XMVectorSet(0, -1, 0, 0);
+             if (isRH) {
+                 vFront = DirectX::XMVectorSet(0, 0, -1, 0);
+                 vBack  = DirectX::XMVectorSet(0, 0, 1, 0);
+             } else {
+                 vFront = DirectX::XMVectorSet(0, 0, 1, 0);
+                 vBack  = DirectX::XMVectorSet(0, 0, -1, 0);
+             }
         }
+
+        DirectX::XMVECTOR targetDir;
+        DirectX::XMVECTOR upDir = worldUp; // Default Up for the camera look-at
 
         switch (face) {
-            case CubeFace::Front: forward = vFront; break;
-            case CubeFace::Back:  forward = vBack; break;
-            case CubeFace::Left:  forward = vLeft; break;
-            case CubeFace::Right: forward = vRight; break;
+            case CubeFace::Right: targetDir = vRight; break;
+            case CubeFace::Left:  targetDir = vLeft; break;
             case CubeFace::Up:    
-                forward = vUp; 
-                // To avoid Gimbal Lock, change Up vector
-                // If looking UP (+Y), Standard Up is usually +Z (or -Z) for top face orientation.
-                // In cubemaps: Up Face (+Y) usually has "Up" vector as -Z (RH) or +Z?
-                // Standard DX Cubemap: Up Face -> +Y, Up Vector -> +Z (Wait, standard is -Z for Up face?)
-                // Let's stick effectively to:
-                up = vFront; // Look UP, Top of screen is 'Front' relative to world
-                if (isRH) up = DirectX::XMVectorSet(0, 0, -1, 0); // Actually usually -Z for RH Up face 
-                else      up = DirectX::XMVectorSet(0, 0, 1, 0); // LH
+                targetDir = vUp;
+                // Fix Gimbal Lock: Looking Up (+Y or +Z), Up vector cannot be +Y/+Z.
+                // Set Up vector to -Z (if Y-up) or -Y (if Z-up) -> Top of screen points "Back"
+                // Or +Z/+Y -> Top of screen points "Front".
+                // Standard Cubemap layout:
+                // +Y Face (Top): Up is +Z. (Y-Up system)
+                // Let's use vFront as Up reference.
+                upDir = vFront;
                 break;
             case CubeFace::Down:  
-                forward = vDown; 
-                if (isRH) up = DirectX::XMVectorSet(0, 0, 1, 0);
-                else      up = DirectX::XMVectorSet(0, 0, -1, 0);
+                targetDir = vDown;
+                // Standard: Up is -Z.
+                upDir = DirectX::XMVectorNegate(vFront);
                 break;
+            case CubeFace::Front: targetDir = vFront; break;
+            case CubeFace::Back:  targetDir = vBack; break;
         }
 
-        if (isRH) return DirectX::XMMatrixLookAtRH(eyePos, DirectX::XMVectorAdd(eyePos, forward), up);
-        else      return DirectX::XMMatrixLookAtLH(eyePos, DirectX::XMVectorAdd(eyePos, forward), up);
+        if (isRH) return DirectX::XMMatrixLookAtRH(eyePos, DirectX::XMVectorAdd(eyePos, targetDir), upDir);
+        else      return DirectX::XMMatrixLookAtLH(eyePos, DirectX::XMVectorAdd(eyePos, targetDir), upDir);
     }
 
     bool CameraController::IsRightHandedProjection(const float* data) {
-        // In standard projection:
-        // LH: [2][2] and [3][2] depend on n, f. [2][3] is +1.
-        // RH: [2][3] is -1.
-        // Index 11 is [2][3] (row-major 0-based: 0..3, 4..7, 8..11).
-        
-        // Wait, IsProjectionMatrix checked data[11] - 1.0f < epsilon.
-        // If data[11] is 1.0, it's typically LH (z mapped to w).
-        // If data[11] is -1.0, it's typically RH (z mapped to -w for clip space).
-        
-        // Let's check data[11].
         if (data[11] < -0.9f) return true; // -1.0
         return false;
     }
 
-    DirectX::XMMATRIX CameraController::GetProjectionMatrix90FOV(DirectX::XMMATRIX originalProj) {
-        return DirectX::XMMatrixPerspectiveFovLH(DirectX::XM_PIDIV2, 1.0f, 0.1f, 1000.0f);
-    }
-    
-    // Updated IsProjectionMatrix to allow -1.0 at index 11 for RH support
     bool CameraController::IsProjectionMatrix(const float* data) {
-        const float epsilon = 0.05f; 
+        const float epsilon = 0.1f; // Relaxed from 0.05
         bool col3Zeros = (std::abs(data[3]) < epsilon && std::abs(data[7]) < epsilon && std::abs(data[15]) < epsilon);
         if (!col3Zeros) return false;
         
-        // Check element 11 ( [2][3] )
         float e11 = data[11];
         if (std::abs(e11 - 1.0f) < epsilon || std::abs(e11 + 1.0f) < epsilon) {
             return true;
@@ -354,63 +382,48 @@ namespace Camera {
         return false;
     }
 
-
-
     bool CameraController::IsViewMatrix(const float* data, bool* outIsTransposed) {
-        // View Matrix Heuristic (Row Major standard)
-        // [ R R R 0 ]
-        // [ R R R 0 ]
-        // [ R R R 0 ]
-        // [ T T T 1 ]
-        // But in memory, it could be transposed.
-        // Standard HLSL cbuffer packing matches float4x4. 
-        // DirectXMath stores row-major.
+        const float epsilon = 0.1f; // Relaxed
 
-        const float epsilon = 0.05f;
-
-        // Check for 0,0,0,1 column (usually index 3, 7, 11, 15)
+        // Row Major Candidate
+        // [ x x x 0 ]
+        // [ x x x 0 ]
+        // [ x x x 0 ]
+        // [ x x x 1 ]
         bool isRowMajor = (std::abs(data[3]) < epsilon && 
                            std::abs(data[7]) < epsilon && 
                            std::abs(data[11]) < epsilon && 
                            std::abs(data[15] - 1.0f) < epsilon);
                            
-        // Check for 0,0,0,1 row (usually index 12, 13, 14, 15 from transposed)
-        // [ R R R T ]
-        // [ R R R T ]
-        // [ R R R T ]
+        // Transposed Candidate
+        // [ x x x x ]
+        // [ x x x x ]
+        // [ x x x x ]
         // [ 0 0 0 1 ]
         bool isColMajor = (std::abs(data[12]) < epsilon && 
                            std::abs(data[13]) < epsilon && 
                            std::abs(data[14]) < epsilon && 
                            std::abs(data[15] - 1.0f) < epsilon);
 
-        if (!isRowMajor && !isColMajor) return false;
+        if (outIsTransposed) *outIsTransposed = isColMajor;
 
-        // Filter out Identity (not interesting to replace if it's just identity, though technically valid)
-        // But maybe the game uses Identity for View at origin? 
-        // Identity has 1 at 0, 5, 10, 15.
-        // Let's filter slightly: Sum of absolute values should be > 1.0 (Identity is 4.0).
-        
-        // Filter out Projection (which also has 1 at 15 sometimes, but we catch specific proj params above)
-        // IsProjectionMatrix checks for [11] == -1 or 1, and [15] == 0.
-        // View Matrix has [15] == 1.
-        
-        return true;
+        // Pick the likely one
+        if (isRowMajor) return true;
+        if (isColMajor) return true;
+
+        return false;
     }
+
     void CameraController::ForceReadBuffer(ID3D11Buffer* sourceBuffer) {
-        // Called from CheckAndGetReplacementBuffer which holds lock.
         if (!sourceBuffer) return;
 
-        // 1. Get Desc to know size
         D3D11_BUFFER_DESC desc;
         sourceBuffer->GetDesc(&desc);
         
-        if (desc.ByteWidth > 4096) return; // Too big for camera
+        if (desc.ByteWidth > 4096) return;
         if (desc.ByteWidth == 0) return;
 
-        // 2. Create Staging Buffer if needed
         if (!m_readbackBuffer || desc.ByteWidth > 4096) { 
-             // Just create max size once
              if (!m_readbackBuffer) {
                  D3D11_BUFFER_DESC stageDesc = {};
                  stageDesc.ByteWidth = 4096; 
@@ -428,12 +441,6 @@ namespace Camera {
              }
         }
         
-        // 3. Copy
-        // We can use CopySubresourceRegion. 
-        // Note: CopyResource requires same size/type. CopySubresourceRegion is often safer if regions match or for partial.
-        // But for Staging we usuall use CopySubresourceRegion.
-        
-        // Clamp copy size to staging buffer size
         D3D11_BOX srcBox;
         srcBox.left = 0;
         srcBox.right = desc.ByteWidth;
@@ -445,19 +452,15 @@ namespace Camera {
         
         m_context->CopySubresourceRegion(m_readbackBuffer.Get(), 0, 0, 0, 0, sourceBuffer, 0, &srcBox);
         
-        // 4. Map and Read
         D3D11_MAPPED_SUBRESOURCE mapped;
         {
-            ScopedHookIgnore ignore; // Do NOT trigger local Hook_Map / Hook_Unmap callbacks
+            ScopedHookIgnore ignore;
             if (SUCCEEDED(m_context->Map(m_readbackBuffer.Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
                 auto& state = m_bufferCache[sourceBuffer];
                 state.cpuData.resize(srcBox.right);
                 memcpy(state.cpuData.data(), mapped.pData, srcBox.right);
                 state.isDirty = true;
-                
                 m_context->Unmap(m_readbackBuffer.Get(), 0);
-                
-                // LOG_INFO("ForceRead Success! Size: ", srcBox.right, " Ptr: ", sourceBuffer);
             } else {
                  LOG_ERROR("ForceRead Map Failed");
             }
