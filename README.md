@@ -113,6 +113,21 @@ Ensure the following libraries are placed in the `external/` directory:
 
     *Artifacts `WideCapture.dll` and `shaders/` will be generated in `build/Release`.*
 
+### 🔧 IDE Configuration: CLion
+
+If you use JetBrains CLion, critical configuration is required to match the MSVC environment:
+
+1.  **Toolchain**:
+    *   Go to `Settings` -> `Build, Execution, Deployment` -> `Toolchains`.
+    *   Add a **Visual Studio** toolchain (Click `+` -> `Visual Studio`).
+    *   **Do not use MinGW or Cygwin**. The static libraries are linked for MSVC.
+    *   Ensure **Architecture** is set to `x64` (amd64).
+
+2.  **Set as Default**:
+    *   In the **Toolchains** list, select the **Visual Studio** toolchain you created.
+    *   Use the **Up Arrow** button (or drag and drop) to **move it to the very top** of the list.
+    *   This ensures CLion automatically uses MSVC as the default compiler for all CMake profiles.
+
 ## 📦 Deployment (Installation)
 
 To use WideCapture with a target game, you must copy the built artifacts to the game's executable directory (where `Game.exe` is located).
