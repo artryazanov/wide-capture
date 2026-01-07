@@ -2,6 +2,8 @@
 #include "Encoder.h"
 #include <mutex>
 
+#pragma warning(push)
+#pragma warning(disable: 4244)
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -10,6 +12,7 @@ extern "C" {
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 }
+#pragma warning(pop)
 
 namespace Video {
     class FFmpegBackend : public Encoder {

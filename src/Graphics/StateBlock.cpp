@@ -18,8 +18,6 @@ namespace Graphics {
         m_context->IAGetIndexBuffer(m_indexBuffer.ReleaseAndGetAddressOf(), &m_indexBufferFormat, &m_indexBufferOffset);
         
         ID3D11Buffer* vbs[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT] = { nullptr };
-        UINT strides[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
-        UINT offsets[D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT];
         m_context->IAGetVertexBuffers(0, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT, vbs, m_vertexStrides, m_vertexOffsets);
         for(int i=0; i<D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT; ++i) {
             m_vertexBuffers[i].Attach(vbs[i]);

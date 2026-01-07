@@ -189,10 +189,6 @@ namespace Graphics {
         return true;
     }
 
-    void CubemapManager::ExecuteCaptureCycle(IDXGISwapChain* swapChain) {
-        // Deprecated/Removed logic. The cycle is now driven by PresentHook.
-    }
-
     bool CubemapManager::PresentHook(IDXGISwapChain* swapChain) {
         if (!m_impl) return true;
 

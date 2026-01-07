@@ -79,13 +79,13 @@ namespace Camera {
          m_bufferCache[resource].mappedPtr = mapped->pData;
     }
 
-    void CameraController::OnUnmap(ID3D11DeviceContext* pContext, ID3D11Resource* resource) {
+    void CameraController::OnUnmap(ID3D11DeviceContext* /*pContext*/, ID3D11Resource* /*resource*/) {
          // Reverted to empty/safe for stability.
     }
 
     // --- logic ---
 
-    ID3D11Buffer* CameraController::CheckAndGetReplacementBuffer(ID3D11DeviceContext* context, ID3D11Buffer* originalBuffer) {
+    ID3D11Buffer* CameraController::CheckAndGetReplacementBuffer(ID3D11DeviceContext* /*context*/, ID3D11Buffer* originalBuffer) {
         if (!originalBuffer) return nullptr;
         // If bypass is on (Player Frame), do not interfere
         if (m_bypass) return nullptr;
