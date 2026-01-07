@@ -37,6 +37,13 @@ WideCapture functions by injecting into the target process and hooking key graph
 
 *   **OS**: Windows 10/11 (x64)
 *   **Compiler**: MSVC v142+ (Visual Studio 2019/2022) with C++17 support.
+    *   **Installation Requirement**: You must install the **Desktop development with C++** workload.
+        1.  Open the **Visual Studio Installer**.
+        2.  Select the **Workloads** tab.
+        3.  Check **Desktop development with C++**.
+        4.  Ensure the "Installation details" on the right include:
+            *   **MSVC ... C++ x64/x86 build tools**
+            *   **Windows 10 (or 11) SDK**
 *   **Tools**: CMake 3.20+, Python 3.x (for injection scripts).
 
 ### External Dependencies
