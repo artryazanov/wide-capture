@@ -113,6 +113,31 @@ Ensure the following libraries are placed in the `external/` directory:
 
     *Artifacts `WideCapture.dll` and `shaders/` will be generated in `build/Release`.*
 
+## 📦 Deployment (Installation)
+
+To use WideCapture with a target game, you must copy the built artifacts to the game's executable directory (where `Game.exe` is located).
+
+**Required Files:**
+1.  **`WideCapture.dll`**: The main library.
+2.  **`RGBToNV12.hlsl`**: Shader for video conversion.
+3.  **`shaders/` folder**: Contains `ProjectionShader.hlsl` (Core compute shader).
+
+**Steps:**
+1.  Go to your build output folder (e.g., `build/Release/`).
+2.  Copy `WideCapture.dll` and `RGBToNV12.hlsl`.
+3.  Copy the `shaders` folder.
+4.  Paste them all into the folder containing the game executable.
+
+*Folder Structure Example:*
+```text
+GameFolder/
+├── Game.exe
+├── WideCapture.dll
+├── RGBToNV12.hlsl
+└── shaders/
+    └── ProjectionShader.hlsl
+```
+
 ## 🎮 Usage
 
 ### 1. Injection
