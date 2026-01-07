@@ -194,7 +194,7 @@ namespace Core {
     }
 
     // Common Handler
-    void CommonSetConstantBuffers(Hooks::tSetConstantBuffers originalFunc, const char* stageName, ID3D11DeviceContext* pContext, UINT StartSlot, UINT NumBuffers, ID3D11Buffer* const* ppConstantBuffers) {
+    void CommonSetConstantBuffers(Hooks::tSetConstantBuffers originalFunc, const char* /*stageName*/, ID3D11DeviceContext* pContext, UINT StartSlot, UINT NumBuffers, ID3D11Buffer* const* ppConstantBuffers) {
         if (!g_IsRunning) {
              if (originalFunc) originalFunc(pContext, StartSlot, NumBuffers, ppConstantBuffers);
              return;
@@ -206,16 +206,9 @@ namespace Core {
             callCounter++;
             
             static int log_limit = 0;
-            bool should_log = false;
             // Only log randomly to avoid spam
             if (log_limit < 10 && (callCounter % 500 == 0)) { 
-                should_log = true;
                 log_limit++;
-            }
-
-            if (should_log) {
-                bool hasMgr = (g_CubemapManager != nullptr);
-               // LOG_INFO("Hook_", stageName, ": Mgr=", hasMgr, " Slot=", StartSlot, " Num=", NumBuffers);
             }
 
             ID3D11Buffer* newBuffers[14];
