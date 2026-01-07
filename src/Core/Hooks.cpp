@@ -9,9 +9,21 @@ extern std::atomic<bool> g_IsRunning;
 #include "Logger.h"
 
 namespace Core {
-    DXGISwapChain_Present_t Hooks::oPresent = nullptr;
-    DXGISwapChain_ResizeBuffers_t Hooks::oResizeBuffers = nullptr;
-    ID3D11DeviceContext_VSSetConstantBuffers_t Hooks::oVSSetConstantBuffers = nullptr;
+    Hooks::tPresent Hooks::oPresent = nullptr;
+    Hooks::tResizeBuffers Hooks::oResizeBuffers = nullptr;
+    Hooks::tSetConstantBuffers Hooks::oVSSetConstantBuffers = nullptr;
+
+    Hooks::tSetConstantBuffers Hooks::oHSSetConstantBuffers = nullptr;
+    Hooks::tSetConstantBuffers Hooks::oDSSetConstantBuffers = nullptr;
+    Hooks::tSetConstantBuffers Hooks::oGSSetConstantBuffers = nullptr;
+    Hooks::tSetConstantBuffers Hooks::oPSSetConstantBuffers = nullptr;
+
+    Hooks::tSetConstantBuffers Hooks::oCSSetConstantBuffers = nullptr;
+    Hooks::tDrawIndexed Hooks::oDrawIndexed = nullptr;
+    Hooks::tDraw Hooks::oDraw = nullptr;
+    Hooks::tMap Hooks::oMap = nullptr;
+    Hooks::tUnmap Hooks::oUnmap = nullptr;
+    Hooks::tUpdateSubresource Hooks::oUpdateSubresource = nullptr;
     
     bool Hooks::m_isInitialized = false;
     std::mutex Hooks::m_mutex;
@@ -113,19 +125,48 @@ namespace Core {
         // Context VTable is at the start of the object
         void** pContextVTable = *reinterpret_cast<void***>(pContext.Get());
         
-        // Hook VSSetConstantBuffers (Index 8)
-        // DIAGNOSTIC DISABLE: Suspected crash source
-        if (MH_CreateHook(pContextVTable[8], reinterpret_cast<LPVOID>(&Hook_VSSetConstantBuffers), reinterpret_cast<void**>(&oVSSetConstantBuffers)) != MH_OK) {
-             LOG_ERROR("Failed to hook VSSetConstantBuffers");
-             // Resources released by ComPtr destructors
-             DestroyWindow(hWnd);
-             return false;
+        // Indices Strategy:
+        // VS = 7 (Reliable)
+        // DrawIndexed = 12 (Reliable)
+        // Draw = 13 (Reliable)
+        // Map = 14 (Verified)
+        // Avoid 15/16/17 (Unmap/PS/IA) due to crashes.
+        
+        int iVS = 7;
+        
+        if (MH_CreateHook(pContextVTable[iVS], reinterpret_cast<LPVOID>(&Hook_VSSetConstantBuffers), reinterpret_cast<void**>(&oVSSetConstantBuffers)) != MH_OK) {
+             LOG_ERROR("Failed to hook VS");
+        }
+        
+        // Draw Hooks removed.
+        
+        // Optional Stages
+        if (MH_CreateHook(pContextVTable[62], reinterpret_cast<LPVOID>(&Hook_HSSetConstantBuffers), reinterpret_cast<void**>(&oHSSetConstantBuffers)) != MH_OK) {}
+        if (MH_CreateHook(pContextVTable[66], reinterpret_cast<LPVOID>(&Hook_DSSetConstantBuffers), reinterpret_cast<void**>(&oDSSetConstantBuffers)) != MH_OK) {}
+        
+        if (MH_CreateHook(pContextVTable[21], reinterpret_cast<LPVOID>(&Hook_GSSetConstantBuffers), reinterpret_cast<void**>(&oGSSetConstantBuffers)) != MH_OK) {
+              MH_CreateHook(pContextVTable[22], reinterpret_cast<LPVOID>(&Hook_GSSetConstantBuffers), reinterpret_cast<void**>(&oGSSetConstantBuffers));
+        }
+        
+        // CS
+        if (MH_CreateHook(pContextVTable[71], reinterpret_cast<LPVOID>(&Hook_CSSetConstantBuffers), reinterpret_cast<void**>(&oCSSetConstantBuffers)) != MH_OK) {
+              MH_CreateHook(pContextVTable[69], reinterpret_cast<LPVOID>(&Hook_CSSetConstantBuffers), reinterpret_cast<void**>(&oCSSetConstantBuffers));
         }
 
-        // Resources released by ComPtr destructors
-        DestroyWindow(hWnd);
+        if (MH_CreateHook(pContextVTable[14], reinterpret_cast<LPVOID>(&Hook_Map), reinterpret_cast<void**>(&oMap)) != MH_OK) {
+            LOG_ERROR("Failed to hook Map (14)");
+        }
+        
+        // DISABLED Unmap (15) to prevent crashes.
+        // if (MH_CreateHook(pContextVTable[15], reinterpret_cast<LPVOID>(&Hook_Unmap), reinterpret_cast<void**>(&oUnmap)) != MH_OK) {}
+        
+        // UpdateSubresource - disabling to be safe.
+        // if (MH_CreateHook(pContextVTable[47], reinterpret_cast<LPVOID>(&Hook_UpdateSubresource), reinterpret_cast<void**>(&oUpdateSubresource)) != MH_OK) {}
 
-        return MH_EnableHook(MH_ALL_HOOKS) == MH_OK;
+    // Resources released by ComPtr destructors
+    DestroyWindow(hWnd);
+
+    return MH_EnableHook(MH_ALL_HOOKS) == MH_OK;
     }
 
     void Hooks::Uninstall() {
@@ -178,40 +219,120 @@ namespace Core {
         return oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
     }
 
-    void __stdcall Hooks::Hook_VSSetConstantBuffers(ID3D11DeviceContext* pContext, UINT StartSlot, UINT NumBuffers, ID3D11Buffer* const* ppConstantBuffers) {
-        // Safe check for shutdown
+    // Common Handler
+    void CommonSetConstantBuffers(Hooks::tSetConstantBuffers originalFunc, const char* stageName, ID3D11DeviceContext* pContext, UINT StartSlot, UINT NumBuffers, ID3D11Buffer* const* ppConstantBuffers) {
         if (!g_IsRunning) {
-             if (oVSSetConstantBuffers) oVSSetConstantBuffers(pContext, StartSlot, NumBuffers, ppConstantBuffers);
+             if (originalFunc) originalFunc(pContext, StartSlot, NumBuffers, ppConstantBuffers);
              return;
         }
 
-        // Intercept logic
-        // We use try_lock to avoid stalling the render thread heavily if uninstallation is happening or Present is busy (though Present shouldn't block this long)
-        // Actually, VSSetConstantBuffers is very frequent. Blocking it might kill perf.
-        // We can just check pointer validity atomic-ish or risks.
-        // But for safety against crash during Uninstall, we need some guard.
-        
-        std::unique_lock<std::mutex> lock(m_mutex, std::try_to_lock);
-        if (lock.owns_lock()) {
-             try {
-                if (g_CubemapManager && g_CubemapManager->IsRecording() && ppConstantBuffers) {
-                    Camera::CameraController* camCtrl = g_CubemapManager->GetCameraController();
-                    if (camCtrl) {
-                        // Check buffers safely
-                        for (UINT i = 0; i < NumBuffers; ++i) {
-                            if (ppConstantBuffers[i]) { // Null check per buffer
-                                 camCtrl->CheckAndModifyConstantBuffer(StartSlot + i, ppConstantBuffers[i]);
-                            }
+        try {
+            // Diagnostic logging (Sampled)
+            static int callCounter = 0;
+            callCounter++;
+            
+            static int log_limit = 0;
+            bool should_log = false;
+            // Only log randomly to avoid spam
+            if (log_limit < 10 && (callCounter % 500 == 0)) { 
+                should_log = true;
+                log_limit++;
+            }
+
+            if (should_log) {
+                bool hasMgr = (g_CubemapManager != nullptr);
+                bool isRec = (hasMgr && g_CubemapManager->IsRecording());
+                Camera::CameraController* cam = (hasMgr ? g_CubemapManager->GetCameraController() : nullptr);
+               // LOG_INFO("Hook_", stageName, ": Mgr=", hasMgr, " Rec=", isRec, " Cam=", (cam!=nullptr), " Slot=", StartSlot, " Num=", NumBuffers);
+            }
+
+            ID3D11Buffer* newBuffers[14];
+            bool modified = false;
+
+            if (g_CubemapManager && g_CubemapManager->IsRecording()) {
+                Camera::CameraController* camCtrl = g_CubemapManager->GetCameraController();
+                if (camCtrl) {
+                    UINT count = NumBuffers;
+                    if (count > 14) count = 14; 
+                    for(UINT i=0; i<count; ++i) {
+                        newBuffers[i] = ppConstantBuffers[i];
+                    }
+
+                    for (UINT i = 0; i < count; ++i) {
+                        if (newBuffers[i]) {
+
+                             // Actually, let's fix the call properly.
+                             ID3D11Buffer* replacementBuf = camCtrl->CheckAndGetReplacementBuffer(pContext, newBuffers[i]);
+                             if (replacementBuf) {
+                                 newBuffers[i] = replacementBuf;
+                                 modified = true;
+                             }
                         }
                     }
                 }
-             } catch (...) {
-                 // Swallow exceptions in high-freq hook
-             }
-        }
-        
-        if (oVSSetConstantBuffers) {
-            oVSSetConstantBuffers(pContext, StartSlot, NumBuffers, ppConstantBuffers);
+            }
+
+            if (originalFunc) {
+                originalFunc(pContext, StartSlot, NumBuffers, modified ? newBuffers : ppConstantBuffers);
+            }
+        } catch (...) {
+            if (originalFunc) originalFunc(pContext, StartSlot, NumBuffers, ppConstantBuffers);
         }
     }
+
+    void __stdcall Hooks::Hook_VSSetConstantBuffers(ID3D11DeviceContext* pContext, UINT StartSlot, UINT NumBuffers, ID3D11Buffer* const* ppConstantBuffers) {
+        CommonSetConstantBuffers(oVSSetConstantBuffers, "VS", pContext, StartSlot, NumBuffers, ppConstantBuffers);
+    }
+    void __stdcall Hooks::Hook_HSSetConstantBuffers(ID3D11DeviceContext* pContext, UINT StartSlot, UINT NumBuffers, ID3D11Buffer* const* ppConstantBuffers) {
+        CommonSetConstantBuffers(oHSSetConstantBuffers, "HS", pContext, StartSlot, NumBuffers, ppConstantBuffers);
+    }
+    void __stdcall Hooks::Hook_DSSetConstantBuffers(ID3D11DeviceContext* pContext, UINT StartSlot, UINT NumBuffers, ID3D11Buffer* const* ppConstantBuffers) {
+        CommonSetConstantBuffers(oDSSetConstantBuffers, "DS", pContext, StartSlot, NumBuffers, ppConstantBuffers);
+    }
+    void __stdcall Hooks::Hook_GSSetConstantBuffers(ID3D11DeviceContext* pContext, UINT StartSlot, UINT NumBuffers, ID3D11Buffer* const* ppConstantBuffers) {
+        CommonSetConstantBuffers(oGSSetConstantBuffers, "GS", pContext, StartSlot, NumBuffers, ppConstantBuffers);
+    }
+    void __stdcall Hooks::Hook_PSSetConstantBuffers(ID3D11DeviceContext* pContext, UINT StartSlot, UINT NumBuffers, ID3D11Buffer* const* ppConstantBuffers) {
+        CommonSetConstantBuffers(oPSSetConstantBuffers, "PS", pContext, StartSlot, NumBuffers, ppConstantBuffers);
+    }
+    void __stdcall Hooks::Hook_CSSetConstantBuffers(ID3D11DeviceContext* pContext, UINT StartSlot, UINT NumBuffers, ID3D11Buffer* const* ppConstantBuffers) {
+        CommonSetConstantBuffers(oCSSetConstantBuffers, "CS", pContext, StartSlot, NumBuffers, ppConstantBuffers);
+    }
+
+HRESULT __stdcall Hooks::Hook_Map(ID3D11DeviceContext* pContext, ID3D11Resource* pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags, D3D11_MAPPED_SUBRESOURCE* pMappedResource) {
+    try {
+        static int mapHitCount = 0;
+        if (mapHitCount < 5) { LOG_INFO("Hook_Map HIT"); mapHitCount++; }
+
+        HRESULT hr = oMap(pContext, pResource, Subresource, MapType, MapFlags, pMappedResource);
+        if (SUCCEEDED(hr) && pMappedResource && g_CubemapManager) {
+            if (MapType == D3D11_MAP_WRITE_DISCARD || MapType == D3D11_MAP_WRITE || MapType == D3D11_MAP_WRITE_NO_OVERWRITE) {
+                 Camera::CameraController* camCtrl = g_CubemapManager->GetCameraController();
+                 if (camCtrl) camCtrl->OnMap(pResource, pMappedResource); 
+            }
+        }
+        return hr;
+    } catch (...) {
+        return oMap(pContext, pResource, Subresource, MapType, MapFlags, pMappedResource); 
+    }
+}
+
+    void __stdcall Hooks::Hook_Unmap(ID3D11DeviceContext* pContext, ID3D11Resource* pResource, UINT Subresource) {
+        // Just call original safely
+        oUnmap(pContext, pResource, Subresource);
+    }
+
+    // Draw Hooks Removed due to instability. 
+    // We rely on ForceUpdateActiveCamera in CubemapManager::ExecuteCaptureCycle.
+
+    void __stdcall Hooks::Hook_UpdateSubresource(ID3D11DeviceContext* pContext, ID3D11Resource* pDstResource, UINT DstSubresource, const D3D11_BOX* pDstBox, const void* pSrcData, UINT SrcRowPitch, UINT SrcDepthPitch) {
+        try {
+            if (g_CubemapManager) {
+                Camera::CameraController* camCtrl = g_CubemapManager->GetCameraController();
+                if (camCtrl) camCtrl->OnUpdateSubresource(pDstResource, pSrcData, pDstBox); 
+            }
+        } catch (...) {}
+        oUpdateSubresource(pContext, pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch);
+    }
+
 }
