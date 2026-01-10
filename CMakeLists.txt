@@ -108,6 +108,8 @@ target_link_libraries(${PROJECT_NAME}
     ws2_32
     shlwapi
     user32
+    crypt32
+    ncrypt
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE 

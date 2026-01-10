@@ -68,7 +68,7 @@ Ensure the following libraries are placed in the `external/` directory:
 
 
 *   **FFmpeg (Static Libraries for MSVC)**:
-    1.  Download a **static** build from [System233/ffmpeg-msvc-prebuilt](https://github.com/System233/ffmpeg-msvc-prebuilt/releases) (e.g., `ffmpeg-n7.1-latest-gpl-amd64-static.zip`).
+    1.  Download a **static** build from [artryazanov/ffmpeg-msvc-prebuilt](https://github.com/artryazanov/ffmpeg-msvc-prebuilt/releases) (e.g., `ffmpeg-n8.0.1-gpl-amd64-static.zip`).
         *   *Note: Standard builds from gyan.dev do not contain the necessary static libraries for MSVC.*
     2.  Extract the contents into `external/ffmpeg`.
     3.  Ensure the structure matches:
