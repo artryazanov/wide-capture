@@ -1,61 +1,110 @@
 #include "pch.h"
-#include "Core/Hooks.h"
+#include <reshade.hpp>
 #include "Core/Logger.h"
+#include "Graphics/CubemapManager.h"
 
-// Global atomic flag for thread cycle control
-std::atomic<bool> g_IsRunning{ true };
+// Global Manager
+static std::unique_ptr<Graphics::CubemapManager> g_CubemapManager;
 
-// Global Hooks instance to ensure lifetime control
-static std::unique_ptr<Core::Hooks> g_Hooks;
-
-void CaptureThread(HMODULE hModule) {
+static void on_init_device(reshade::api::device* device)
+{
     Logger::Init();
-    LOG_INFO("WideCapture injected successfully. Thread ID: ", GetCurrentThreadId());
-
-    try {
-        // Wait for game initialization
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-
-        // Init Hooks
-        g_Hooks = std::make_unique<Core::Hooks>();
-        if (!g_Hooks->Install()) {
-            LOG_ERROR("Failed to install hooks. Aborting.");
-            g_IsRunning = false;
-        } else {
-            LOG_INFO("Hooks installed. Press END to unload.");
-        }
-
-        // Main Loop
-        while (g_IsRunning) {
-            if (GetAsyncKeyState(VK_END) & 0x8000) {
-                g_IsRunning = false;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-
-        if (g_Hooks) {
-            g_Hooks->Uninstall();
-            g_Hooks.reset();
-        }
-    }
-    catch (const std::exception& e) {
-        LOG_ERROR("Critical error in CaptureThread: ", e.what());
-    }
-
-    LOG_INFO("Unloading library...");
-    Logger::Shutdown();
-    FreeLibraryAndExitThread(hModule, 0);
+    LOG_INFO("Init Device: ", (void*)device);
+    // Initialize global resources if needed, though usually we wait for swapchain or present
 }
 
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID /*lpReserved*/) {
-    switch (ul_reason_for_call) {
+static void on_destroy_device(reshade::api::device* device)
+{
+    LOG_INFO("Destroy Device: ", (void*)device);
+    g_CubemapManager.reset();
+    Logger::Shutdown();
+}
+
+static void on_init_swapchain(reshade::api::swapchain* swapchain, bool resize)
+{
+    LOG_INFO("Init Swapchain. Resize: ", resize);
+    if (!g_CubemapManager) {
+        g_CubemapManager = std::make_unique<Graphics::CubemapManager>(swapchain->get_device());
+    }
+}
+
+static void on_destroy_swapchain(reshade::api::swapchain* /*swapchain*/, bool /*resize*/)
+{
+    LOG_INFO("Destroy Swapchain");
+    // We can keep the manager alive during resize, or reset it.
+    // If we reset, we lose recording state.
+}
+
+static void on_present(reshade::api::command_queue* queue, reshade::api::swapchain* swapchain, const reshade::api::rect* /*source*/, const reshade::api::rect* /*dest*/, uint32_t /*dirty*/, const reshade::api::rect* /*dirty_rects*/)
+{
+    if (g_CubemapManager) {
+        g_CubemapManager->OnPresent(queue, swapchain);
+    }
+}
+
+static void on_draw(reshade::api::command_list* cmd_list, uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance)
+{
+    if (g_CubemapManager) {
+        g_CubemapManager->OnDraw(cmd_list, vertex_count, instance_count, first_vertex, first_instance);
+    }
+}
+
+static void on_draw_indexed(reshade::api::command_list* cmd_list, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance)
+{
+    if (g_CubemapManager) {
+        g_CubemapManager->OnDrawIndexed(cmd_list, index_count, instance_count, first_index, vertex_offset, first_instance);
+    }
+}
+
+static void on_update_buffer_region(reshade::api::device* device, const void* data, reshade::api::resource resource, uint64_t offset, uint64_t size)
+{
+    if (g_CubemapManager) {
+        g_CubemapManager->OnUpdateBuffer(device, resource, data, size);
+    }
+}
+
+static void on_map_buffer_region(reshade::api::device* device, reshade::api::resource resource, uint64_t /*offset*/, uint64_t size, reshade::api::map_access /*access*/, void** data)
+{
+    if (g_CubemapManager && data && *data) {
+        g_CubemapManager->OnUpdateBuffer(device, resource, *data, size);
+    }
+}
+
+static void on_bind_pipeline(reshade::api::command_list* cmd_list, reshade::api::pipeline_stage stages, reshade::api::pipeline pipeline)
+{
+    if (g_CubemapManager) {
+        g_CubemapManager->OnBindPipeline(cmd_list, stages, pipeline);
+    }
+}
+
+// Addon Entry Point
+extern "C" __declspec(dllexport) const char* reshade_addon_name = "WideCapture";
+extern "C" __declspec(dllexport) const char* reshade_addon_description = "Captures 360 video from DX11 games.";
+
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
+{
+    switch (fdwReason)
+    {
     case DLL_PROCESS_ATTACH:
-        MessageBoxA(NULL, "Full DLL Attached! Testing...", "WideCapture Debug", MB_OK);
-        DisableThreadLibraryCalls(hModule);
-        CreateThread(nullptr, 0, (LPTHREAD_START_ROUTINE)CaptureThread, hModule, 0, nullptr);
+        if (!reshade::register_addon(hModule))
+            return FALSE;
+
+        reshade::register_event<reshade::addon_event::init_device>(on_init_device);
+        reshade::register_event<reshade::addon_event::destroy_device>(on_destroy_device);
+        reshade::register_event<reshade::addon_event::init_swapchain>(on_init_swapchain);
+        reshade::register_event<reshade::addon_event::destroy_swapchain>(on_destroy_swapchain);
+        reshade::register_event<reshade::addon_event::present>(on_present);
+
+        // Capture Logic Events
+        reshade::register_event<reshade::addon_event::draw>(on_draw);
+        reshade::register_event<reshade::addon_event::draw_indexed>(on_draw_indexed);
+        reshade::register_event<reshade::addon_event::update_buffer_region>(on_update_buffer_region);
+        reshade::register_event<reshade::addon_event::map_buffer_region>(on_map_buffer_region);
+        reshade::register_event<reshade::addon_event::bind_pipeline>(on_bind_pipeline);
+
         break;
     case DLL_PROCESS_DETACH:
-        g_IsRunning = false;
+        reshade::unregister_addon(hModule);
         break;
     }
     return TRUE;
