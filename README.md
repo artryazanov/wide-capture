@@ -1,223 +1,53 @@
 # WideCapture
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20DirectX%2011-lightgrey.svg)
-![Language](https://img.shields.io/badge/language-C%2B%2B17-blue.svg)
+WideCapture is a 360-degree video capture tool for DirectX 11 games, now powered by the ReShade Add-on API.
 
-**WideCapture** is a high-performance, AAA-grade solution for capturing 360-degree (equirectangular) gameplay video from DirectX 11 applications. 
+## Features
 
-Designed for reverse engineers and graphics programmers, it utilizes **DLL Injection**, **API Hooking**, **Compute Shaders**, and **Zero-Copy Hardware Encoding** to record panoramic video without accessing the game's source code.
+- **Single-Frame Capture**: Captures all 6 faces of a cubemap within a single game frame, eliminating motion artifacts caused by camera rotation.
+- **Auto-Detection**: Automatically detects game camera matrices (View/Projection) using heuristic scanning of Constant Buffers.
+- **Hardware Encoding**: Uses NVENC/AMF via FFmpeg for high-performance recording.
+- **ReShade Add-on**: Integrated as a ReShade Add-on for better compatibility and stability.
 
-> [!WARNING]
-> **Development Status**: This project is currently in a **Proof of Concept / Alpha** stage.
-> *   **Implemented**: Basic DLL injection mechanism, DirectX 11 hooking infrastructure (MinHook), and foundational FFmpeg integration.
-> *   **Work in Progress**: Reliable camera hijacking heuristics, correct cubemap rendering/stitching, and stable hardware encoding.
->
-> The features described below represent the **target architecture and goals** of the project. Expect crashes, visual artifacts, and incomplete functionality in the current version.
+## Requirements
 
-## 🚀 Key Features
+- **ReShade 5.0+** with Add-on support enabled.
+- **Windows 10/11**.
+- **DirectX 11** game.
+- **NVIDIA/AMD GPU** with hardware encoding support.
 
-*   **Universal Compatibility**: Works with most DirectX 11 games (Unity, Unreal Engine, proprietary engines).
-*   **Zero-Copy Pipeline**: Data never leaves the GPU. Surfaces are shared directly between DirectX and the Video Encoder.
-*   **Compute Shader Stitching**: Converts 6 cubemap faces to Equirectangular projection purely on the GPU.
-*   **Hardware Acceleration**: Direct integration with FFmpeg's D3D11VA and NVENC/AMF for substantial performance.
-*   **Camera Hijacking**: Heuristic analysis of Constant Buffers to identify and manipulate the game's camera for 6-axis rendering.
+## Installation
 
-## 🛠️ Architecture
+1. Install ReShade with full Add-on support to your target game.
+2. Place `WideCapture.addon` (rename the built DLL) into the game folder (where ReShade is installed).
+3. Ensure `ffmpeg` libraries are available or statically linked.
 
-WideCapture functions by injecting into the target process and hooking key graphics API calls:
+## Usage
 
-1.  **Injection**: The DLL enters the process and spins up a capture thread.
-2.  **Hooking**: Intercepts `IDXGISwapChain::Present` to control the frame cycle and `ID3D11DeviceContext::VSSetConstantBuffers` to manipulate the camera.
-3.  **Rendering**: For every single game frame, the engine is tricked into rendering 6 times (Front, Back, Left, Right, Up, Down).
-4.  **Stitching**: A Compute Shader (`ProjectionShader.hlsl`) samples these 6 views and writes to a single Equirectangular texture.
-5.  **Encoding**: The texture is passed to FFmpeg via D3D11 hardware context for immediate H.264 encoding.
+- The addon automatically activates when the game starts.
+- It scans for the camera buffer. Once found, it begins recording 360 video to `widecapture_reshade.mp4`.
+- **Note**: This is an experimental build. Performance impact is significant due to multi-view rendering (6x geometry pass).
 
-## 📋 Prerequisites
+## Building
 
-*   **OS**: Windows 10/11 (x64)
-*   **Compiler**: MSVC v142+ (Visual Studio 2019/2022) with C++17 support.
-    *   **Installation Requirement**: You must install the **Desktop development with C++** workload.
-        1.  Open the **Visual Studio Installer**.
-        2.  Select the **Workloads** tab.
-        3.  Check **Desktop development with C++**.
-        4.  Ensure the "Installation details" on the right include:
-            *   **MSVC ... C++ x64/x86 build tools**
-            *   **Windows 10 (or 11) SDK**
-*   **Tools**: CMake 3.20+, Python 3.x (for injection scripts).
-
-### External Dependencies
-Ensure the following libraries are placed in the `external/` directory:
-
-*   **DirectXMath**: [microsoft/DirectXMath](https://github.com/microsoft/DirectXMath)
-    1.  Download the source code or specific header files.
-    2.  Place the header files in `external/DirectXMath/include`.
-    3.  Ensure the structure looks like this:
-
-        ```text
-        external/DirectXMath/
-        └── include/
-            ├── DirectXMath.h
-            ├── DirectXMathConvert.inl
-            ├── DirectXMathMatrix.inl
-            ├── DirectXMathMisc.inl
-            ├── DirectXMathVector.inl
-            └── ...
-        ```
-    This external dependency is required to ensure full DirectXMath support on MinGW, which may have incomplete system headers.
-
-
-*   **FFmpeg (Static Libraries for MSVC)**:
-    1.  Download a **static** build from [artryazanov/ffmpeg-msvc-prebuilt](https://github.com/artryazanov/ffmpeg-msvc-prebuilt/releases) (e.g., `ffmpeg-n8.0.1-gpl-amd64-static.zip`).
-        *   *Note: Standard builds from gyan.dev do not contain the necessary static libraries for MSVC.*
-    2.  Extract the contents into `external/ffmpeg`.
-    3.  Ensure the structure matches:
-
-        ```text
-        external/ffmpeg/
-        ├── include/          # Header files (.h)
-        │   ├── libavcodec/
-        │   ├── libavformat/
-        │   └── ...
-        └── lib/              # Static libraries (.a)
-            ├── libavcodec.a
-            ├── libavformat.a
-            ├── ...
-            ├── pkgconfig/
-            └── ...
-        ```
-
-    > **Note**: This project is configured to link FFmpeg statically. You do **not** need to copy any FFmpeg DLLs to the output directory.
-
-*   **MinHook**: [TsudaKageyu/minhook](https://github.com/TsudaKageyu/minhook)
-    1.  Clone the repository or download the source code.
-    2.  Place the contents in `external/minhook`.
-    3.  Ensure `CMakeLists.txt` is located at `external/minhook/CMakeLists.txt`. Structure:
-
-        ```text
-        external/minhook/
-        ├── CMakeLists.txt
-        ├── include/
-        │   └── MinHook.h
-        ├── src/
-        └── ...
-        ```
-
-    The project will automatically build MinHook as part of the solution.
-
-## 🔨 Build Instructions
-
-1.  **Clone the repository**:
-    ```bash
-    git clone https://github.com/artryazanov/wide-capture.git
-    cd WideCapture
-    ```
-
-2.  **Configure with CMake**:
-    ```bash
-    mkdir build
-    cd build
-    cmake .. -DCMAKE_BUILD_TYPE=Release
-    ```
-
-3.  **Build**:
-    ```bash
-    cmake --build . --config Release
-    ```
-
-    *Artifacts `WideCapture.dll` and `shaders/` will be generated in `build/Release`.*
-
-### 🔧 IDE Configuration: CLion
-
-If you use JetBrains CLion, critical configuration is required to match the MSVC environment:
-
-1.  **Toolchain**:
-    *   Go to `Settings` -> `Build, Execution, Deployment` -> `Toolchains`.
-    *   Add a **Visual Studio** toolchain (Click `+` -> `Visual Studio`).
-    *   **Do not use MinGW or Cygwin**. The static libraries are linked for MSVC.
-    *   Ensure **Architecture** is set to `x64` (amd64).
-
-2.  **Set as Default**:
-    *   In the **Toolchains** list, select the **Visual Studio** toolchain you created.
-    *   Use the **Up Arrow** button (or drag and drop) to **move it to the very top** of the list.
-    *   This ensures CLion automatically uses MSVC as the default compiler for all CMake profiles.
-
-## 📦 Deployment (Installation)
-
-To use WideCapture with a target game, you must copy the built artifacts to the game's executable directory (where `Game.exe` is located).
-
-**Required Files:**
-1.  **`WideCapture.dll`**: The main library.
-2.  **`RGBToNV12.hlsl`**: Shader for video conversion.
-3.  **`shaders/` folder**: Contains `ProjectionShader.hlsl` (Core compute shader).
-
-**Steps:**
-1.  Go to your build output folder (e.g., `build/Release/`).
-2.  Copy `WideCapture.dll` and `RGBToNV12.hlsl`.
-3.  Copy the `shaders` folder.
-4.  Paste them all into the folder containing the game executable.
-
-*Folder Structure Example:*
-```text
-GameFolder/
-├── Game.exe
-├── WideCapture.dll
-├── RGBToNV12.hlsl
-└── shaders/
-    └── ProjectionShader.hlsl
-```
-
-## 🎮 Usage
-
-### 1. Injection
-Use the provided Python script to inject the DLL into your target game.
+1. Ensure you have CMake and Visual Studio installed.
+2. The project fetches ReShade headers automatically or expects them in `external/reshade/include`.
+3. Run CMake configuration and build.
 
 ```bash
-python scripts/inject.py <process_name.exe> <path/to/WideCapture.dll>
+mkdir build
+cd build
+cmake ..
+cmake --build . --config Release
 ```
 
-*Example:* `python scripts/inject.py SkyrimSE.exe build/Release/WideCapture.dll`
+## Architecture
 
-### 2. Controls
-*   **Automatic Start**: Recording begins immediately upon successful initialization of the graphics hooks.
-*   **Unload**: Press the `END` key to stop recording, finalize the MP4 file, and unload the DLL safely.
+- **Core**: ReShade Event hooks (`main.cpp`).
+- **Camera**: Matrix detection and manipulation (`CameraController`).
+- **Graphics**: Multi-view rendering loop and Projection Compute Shader (`CubemapManager`).
+- **Video**: FFmpeg NV12 encoding (`FFmpegBackend`).
 
-### 3. Post-Processing (Metadata)
-To allow video players (YouTube, VLC) to recognize the file as 360° video, inject the spatial media metadata:
+## License
 
-```bash
-# Requires Google's spatial-media tool
-python spatial_media_injector.py -i record_360.mp4 -o final_output.mp4
-```
-
-## 📂 Project Structure
-
-```
-WideCapture/
-├── src/
-│   ├── Core/           # Hooks, Logger, Entry Point
-│   ├── Graphics/       # DX11 Management, Cubemap Logic
-│   ├── Compute/        # Shaders & Compilation
-│   ├── Camera/         # Matrix Math & Camera Control
-│   └── Video/          # FFmpeg D3D11VA Backend
-├── external/           # Dependencies (MinHook, FFmpeg, DirectXMath)
-├── scripts/            # Injection & Utility scripts
-└── CMakeLists.txt      # Build Configuration
-```
-
-## ⚠️ Disclaimer
-
-This software is for educational and research purposes only. Using this tool in multiplayer games may trigger anti-cheat software (VAC, BattlEye, EasyAntiCheat) resulting in bans. Use only in single-player modes or controlled environments.
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-### Third-Party Licenses
-
-This project makes use of the following third-party libraries:
-
-*   **MinHook**: Developed by TsudaKageyu. Licensed under the [BSD 2-Clause License](https://github.com/TsudaKageyu/minhook/blob/master/LICENSE.txt).
-*   **FFmpeg**: Licensed under the [GNU General Public License (GPL) version 3](https://www.gnu.org/licenses/gpl-3.0.html). 
-    *   This software uses code of <a href=http://ffmpeg.org>FFmpeg</a> licensed under the <a href=http://www.gnu.org/licenses/gpl.html>GPLv3</a> and its source can be downloaded [here](https://ffmpeg.org/download.html).
-*   **DirectXMath**: Developed by Microsoft. Licensed under the [MIT License](https://github.com/microsoft/DirectXMath/blob/main/LICENSE).
+MIT

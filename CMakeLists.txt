@@ -26,14 +26,6 @@ endif()
 set(MINHOOK_BUILD_STATIC_LIBS ON CACHE BOOL "Build MinHook as a static library" FORCE)
 set(MH_BUILD_SHARED_LIBS OFF CACHE BOOL "Build MinHook as a static library" FORCE) # Some versions use this
 
-if(EXISTS "${CMAKE_SOURCE_DIR}/external/minhook/CMakeLists.txt")
-    add_subdirectory(external/minhook)
-    # Most MinHook CMake setups define a 'minhook' target
-else()
-    message(WARNING "MinHook not found in external/minhook. Please ensure it is present.")
-    add_library(minhook INTERFACE) 
-endif()
-
 # FFmpeg
 set(FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/external/ffmpeg")
 include_directories(${FFMPEG_ROOT}/include)
@@ -42,8 +34,6 @@ link_directories(${FFMPEG_ROOT}/lib)
 set(SOURCES
     src/main.cpp
     src/pch.cpp
-    src/Core/Hooks.cpp
-    src/Graphics/DX11Proxy.cpp
     src/Graphics/CubemapManager.cpp
     src/Graphics/StateBlock.cpp
     src/Compute/ShaderCompiler.cpp
@@ -53,9 +43,7 @@ set(SOURCES
 
 set(HEADERS
     src/pch.h
-    src/Core/Hooks.h
     src/Core/Logger.h
-    src/Graphics/DX11Proxy.h
     src/Graphics/CubemapManager.h
     src/Graphics/StateBlock.h
     src/Compute/ShaderCompiler.h
@@ -68,7 +56,6 @@ add_library(${PROJECT_NAME} SHARED ${SOURCES} ${HEADERS})
 
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
-    minhook
     
     # FFmpeg Libraries (Precise filenames for System233 static build)
     ${FFMPEG_ROOT}/lib/libavformat.a
@@ -115,6 +102,7 @@ target_link_libraries(${PROJECT_NAME}
 target_include_directories(${PROJECT_NAME} PRIVATE 
     src
     external/DirectXMath/include
+    external/reshade/include
 )
 
 # Optimization flags for specific configurations

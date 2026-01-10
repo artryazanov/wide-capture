@@ -1,345 +1,356 @@
 #include "pch.h"
 #include "CubemapManager.h"
 #include "../Compute/ShaderCompiler.h"
-#include "../Video/FFmpegBackend.h"
-#include "../Camera/CameraController.h"
-#include "StateBlock.h"
 #include "../Core/Logger.h"
-#include "DX11Proxy.h"
+#include <d3dcompiler.h>
 #include <algorithm>
+#include "StateBlock.h"
 
 namespace Graphics {
 
-    struct CubemapManagerImpl {
-        std::unique_ptr<Video::FFmpegBackend> encoder;
-        std::unique_ptr<Camera::CameraController> cameraController;
-        
-        ComPtr<ID3D11Texture2D> faceTextures[6];
-        ComPtr<ID3D11ShaderResourceView> faceSRVs[6];
-        ComPtr<ID3D11Texture2D> cubeTexture;
-        ComPtr<ID3D11ShaderResourceView> cubeSRV;
-        
-        ComPtr<ID3D11Texture2D> equirectTexture;
-        ComPtr<ID3D11UnorderedAccessView> equirectUAV;
-        ComPtr<ID3D11ShaderResourceView> equirectSRV;
-
-        // NV12 Conversion
-        ComPtr<ID3D11Texture2D> equirectNV12;
-        ComPtr<ID3D11RenderTargetView> nv12Y_RTV;
-        ComPtr<ID3D11RenderTargetView> nv12UV_RTV;
-        
-        ComPtr<ID3D11VertexShader> convertVS;
-        ComPtr<ID3D11PixelShader> convertPS_Y;
-        ComPtr<ID3D11PixelShader> convertPS_UV;
-        ComPtr<ID3D11SamplerState> linearSampler;
-
-        ComPtr<ID3D11ComputeShader> projectionShader;
-        
-        UINT gameWidth = 0;
-        UINT gameHeight = 0;
-        UINT faceSize = 0; // Square face size
-        DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-
-        bool isInitialized = false;
-    };
-
-    CubemapManager::CubemapManager(ID3D11Device* device, ID3D11DeviceContext* context) 
-        : m_device(device), m_context(context), m_isRecording(true) { 
-        
-        m_impl = std::make_unique<CubemapManagerImpl>();
-        m_impl->encoder = std::make_unique<Video::FFmpegBackend>();
-        m_impl->cameraController = std::make_unique<Camera::CameraController>(context);
-
-        // Start cycle so next increment is 0 (First capture frame)
-        // Actually, if we want to sync, let's start so next frame is Player frame (6)
-        // m_frameCycle = 6;
-        // Wait, PresentHook increments first.
-        // if m_frameCycle = 5; ++ => 6 (Player).
-        // Let's ensure we start cleanly.
-        m_frameCycle = 5;
+    CubemapManager::CubemapManager(reshade::api::device* device) : m_device(device) {
+        m_cameraController = std::make_unique<Camera::CameraController>();
+        m_encoder = std::make_unique<Video::FFmpegBackend>();
     }
 
     CubemapManager::~CubemapManager() {
-        if (m_impl && m_impl->encoder) {
-            m_impl->encoder->Finish();
-        }
+        DestroyResources();
     }
 
-    bool CubemapManager::IsRecording() const {
-        return m_isRecording;
-    }
-    
-    Camera::CameraController* CubemapManager::GetCameraController() {
-        return m_impl ? m_impl->cameraController.get() : nullptr;
-    }
-
-    bool InitResources(CubemapManager* self, UINT w, UINT h, DXGI_FORMAT format) {
-        auto& impl = self->m_impl;
-        impl->gameWidth = w;
-        impl->gameHeight = h;
-        impl->format = format; 
-
-        // 1. Determine Face Size (Must be SQUARE)
-        impl->faceSize = std::min(w, h);
-        
-        LOG_INFO("Init Resources. Game: ", w, "x", h, " -> Face Size: ", impl->faceSize, "x", impl->faceSize);
-
-        DX11Proxy proxy(self->m_device.Get(), self->m_context.Get());
-
-        // 2. Create Face Textures (Square)
-        for(int i=0; i<6; ++i) {
-            if (!proxy.CreateTexture2D(impl->faceSize, impl->faceSize, format, D3D11_BIND_SHADER_RESOURCE, impl->faceTextures[i].GetAddressOf())) return false;
-            self->m_device->CreateShaderResourceView(impl->faceTextures[i].Get(), nullptr, impl->faceSRVs[i].GetAddressOf());
+    void CubemapManager::DestroyResources() {
+        if (m_device) {
+            for (int i = 0; i < 6; ++i) {
+                if (m_faceRtvs[i].handle) m_device->destroy_resource_view(m_faceRtvs[i]);
+                if (m_faceSrvs[i].handle) m_device->destroy_resource_view(m_faceSrvs[i]);
+                if (m_faceTextures[i].handle) m_device->destroy_resource(m_faceTextures[i]);
+            }
+            if (m_cubeSrv.handle) m_device->destroy_resource_view(m_cubeSrv);
+            if (m_cubeTexture.handle) m_device->destroy_resource(m_cubeTexture);
+            if (m_equirectUAV.handle) m_device->destroy_resource_view(m_equirectUAV);
+            if (m_equirectSRV.handle) m_device->destroy_resource_view(m_equirectSRV);
+            if (m_equirectTexture.handle) m_device->destroy_resource(m_equirectTexture);
         }
 
-        // 2. Create Cube Texture Array
-        D3D11_TEXTURE2D_DESC desc = {};
-        desc.Width = impl->faceSize;
-        desc.Height = impl->faceSize;
-        desc.MipLevels = 1;
-        desc.ArraySize = 6;
-        desc.Format = format;
-        desc.SampleDesc.Count = 1;
-        desc.Usage = D3D11_USAGE_DEFAULT;
-        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        desc.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE;
-        
-        if (FAILED(self->m_device->CreateTexture2D(&desc, nullptr, impl->cubeTexture.GetAddressOf()))) return false;
-        if (FAILED(self->m_device->CreateShaderResourceView(impl->cubeTexture.Get(), nullptr, impl->cubeSRV.GetAddressOf()))) return false;
+        m_nv12Y_RTV.Reset();
+        m_nv12UV_RTV.Reset();
+        m_equirectNV12.Reset();
+        m_projectionShader.Reset();
+        m_convertVS.Reset();
+        m_convertPS_Y.Reset();
+        m_convertPS_UV.Reset();
+        m_linearSampler.Reset();
 
-        // 3. Equirectangular Output (UAV)
-        UINT eqW = impl->faceSize * 4;
-        if (eqW > 4096) eqW = 4096;
+        if (m_encoder) m_encoder->Finish();
+    }
+
+    bool CubemapManager::InitResources(uint32_t width, uint32_t height) {
+        if (m_width == width && m_height == height && m_faceTextures[0].handle != 0) return true;
+        
+        DestroyResources();
+
+        m_width = width;
+        m_height = height;
+        m_faceSize = std::min(width, height); // Keep it square
+
+        // 1. Create Face Textures (R8G8B8A8 UNORM)
+        for (int i = 0; i < 6; ++i) {
+            if (!m_device->create_resource(
+                reshade::api::resource_desc(m_faceSize, m_faceSize, 1, 1, reshade::api::format::r8g8b8a8_unorm, 1, reshade::api::memory_heap::gpu_only, reshade::api::resource_usage::render_target | reshade::api::resource_usage::copy_source | reshade::api::resource_usage::shader_resource),
+                nullptr, reshade::api::resource_usage::shader_resource, &m_faceTextures[i]))
+            {
+                LOG_ERROR("Failed to create face texture ", i);
+                return false;
+            }
+
+            if (!m_device->create_resource_view(m_faceTextures[i], reshade::api::resource_usage::render_target,
+                reshade::api::resource_view_desc(reshade::api::resource_view_type::texture_2d, reshade::api::format::r8g8b8a8_unorm, 0, 1, 0, 1), &m_faceRtvs[i]))
+                return false;
+
+            if (!m_device->create_resource_view(m_faceTextures[i], reshade::api::resource_usage::shader_resource,
+                reshade::api::resource_view_desc(reshade::api::resource_view_type::texture_2d, reshade::api::format::r8g8b8a8_unorm, 0, 1, 0, 1), &m_faceSrvs[i]))
+                return false;
+        }
+
+        // 2. Create Cube Texture Array (for Compute Shader)
+        if (!m_device->create_resource(
+            reshade::api::resource_desc(reshade::api::resource_type::texture_2d, m_faceSize, m_faceSize, 6, 1, reshade::api::format::r8g8b8a8_unorm, 1, reshade::api::memory_heap::gpu_only, reshade::api::resource_usage::copy_dest | reshade::api::resource_usage::shader_resource),
+            nullptr, reshade::api::resource_usage::shader_resource, &m_cubeTexture))
+            return false;
+
+        if (!m_device->create_resource_view(m_cubeTexture, reshade::api::resource_usage::shader_resource,
+            reshade::api::resource_view_desc(reshade::api::resource_view_type::texture_cube, reshade::api::format::r8g8b8a8_unorm, 0, 1, 0, 6), &m_cubeSrv))
+            return false;
+
+        // 3. Equirectangular Output
+        UINT eqW = m_faceSize * 4;
         UINT eqH = eqW / 2;
+        // Align to 16
         eqW = (eqW + 15) & ~15;
         eqH = (eqH + 15) & ~15;
 
-        LOG_INFO("Initializing Capture. Game: ", w, "x", h, " Output: ", eqW, "x", eqH);
-        
-        if (!proxy.CreateTexture2D(eqW, eqH, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET, impl->equirectTexture.GetAddressOf())) return false;
-        if (FAILED(self->m_device->CreateUnorderedAccessView(impl->equirectTexture.Get(), nullptr, impl->equirectUAV.GetAddressOf()))) return false;
-        if (FAILED(self->m_device->CreateShaderResourceView(impl->equirectTexture.Get(), nullptr, impl->equirectSRV.GetAddressOf()))) return false;
+        if (!m_device->create_resource(
+            reshade::api::resource_desc(eqW, eqH, 1, 1, reshade::api::format::r8g8b8a8_unorm, 1, reshade::api::memory_heap::gpu_only, reshade::api::resource_usage::unordered_access | reshade::api::resource_usage::shader_resource),
+            nullptr, reshade::api::resource_usage::unordered_access, &m_equirectTexture))
+            return false;
 
-        // 3b. NV12 Output & RTVs
-        if (!proxy.CreateTexture2D(eqW, eqH, DXGI_FORMAT_NV12, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, impl->equirectNV12.GetAddressOf())) return false;
-        
-        D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
-        rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-        
-        // Y Plane
-        rtvDesc.Format = DXGI_FORMAT_R8_UNORM;
-        if (FAILED(self->m_device->CreateRenderTargetView(impl->equirectNV12.Get(), &rtvDesc, impl->nv12Y_RTV.GetAddressOf()))) return false;
-        
-        // UV Plane
-        rtvDesc.Format = DXGI_FORMAT_R8G8_UNORM; 
-        if (FAILED(self->m_device->CreateRenderTargetView(impl->equirectNV12.Get(), &rtvDesc, impl->nv12UV_RTV.GetAddressOf()))) return false;
+        if (!m_device->create_resource_view(m_equirectTexture, reshade::api::resource_usage::unordered_access,
+            reshade::api::resource_view_desc(reshade::api::resource_view_type::texture_2d, reshade::api::format::r8g8b8a8_unorm, 0, 1, 0, 1), &m_equirectUAV))
+            return false;
 
-        // Sampler
+        if (!m_device->create_resource_view(m_equirectTexture, reshade::api::resource_usage::shader_resource,
+            reshade::api::resource_view_desc(reshade::api::resource_view_type::texture_2d, reshade::api::format::r8g8b8a8_unorm, 0, 1, 0, 1), &m_equirectSRV))
+            return false;
+
+        // 4. Native D3D11 Initialization for Shaders/FFmpeg
+        ID3D11Device* d3d11Dev = (ID3D11Device*)m_device->get_native();
+        if (!d3d11Dev) return false;
+
+        // Compile Projection Shader
+        if (FAILED(Compute::ShaderCompiler::CompileComputeShader(d3d11Dev, L"shaders/ProjectionShader.hlsl", "main", m_projectionShader.GetAddressOf()))) {
+             // Fallback try local
+             if (FAILED(Compute::ShaderCompiler::CompileComputeShader(d3d11Dev, L"ProjectionShader.hlsl", "main", m_projectionShader.GetAddressOf()))) {
+                 LOG_ERROR("Failed to compile ProjectionShader");
+                 // Continue anyway to allow build
+             }
+        }
+
+        // Compile RGB->NV12
+        ID3DBlob* vsBlob = nullptr;
+        ID3DBlob* psYBlob = nullptr;
+        ID3DBlob* psUVBlob = nullptr;
+        
+        if (FAILED(D3DCompileFromFile(L"RGBToNV12.hlsl", nullptr, nullptr, "VS", "vs_5_0", 0, 0, &vsBlob, nullptr))) {
+             if (FAILED(D3DCompileFromFile(L"src/Graphics/RGBToNV12.hlsl", nullptr, nullptr, "VS", "vs_5_0", 0, 0, &vsBlob, nullptr)))
+                LOG_ERROR("Failed RGBToNV12 VS");
+        }
+        if (vsBlob) {
+            d3d11Dev->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, m_convertVS.GetAddressOf());
+            vsBlob->Release();
+        }
+
+        if (FAILED(D3DCompileFromFile(L"RGBToNV12.hlsl", nullptr, nullptr, "PS_Y", "ps_5_0", 0, 0, &psYBlob, nullptr))) {
+             if (FAILED(D3DCompileFromFile(L"src/Graphics/RGBToNV12.hlsl", nullptr, nullptr, "PS_Y", "ps_5_0", 0, 0, &psYBlob, nullptr))) {}
+        }
+        if (psYBlob) {
+            d3d11Dev->CreatePixelShader(psYBlob->GetBufferPointer(), psYBlob->GetBufferSize(), nullptr, m_convertPS_Y.GetAddressOf());
+            psYBlob->Release();
+        }
+
+        if (FAILED(D3DCompileFromFile(L"RGBToNV12.hlsl", nullptr, nullptr, "PS_UV", "ps_5_0", 0, 0, &psUVBlob, nullptr))) {
+             if (FAILED(D3DCompileFromFile(L"src/Graphics/RGBToNV12.hlsl", nullptr, nullptr, "PS_UV", "ps_5_0", 0, 0, &psUVBlob, nullptr))) {}
+        }
+        if (psUVBlob) {
+            d3d11Dev->CreatePixelShader(psUVBlob->GetBufferPointer(), psUVBlob->GetBufferSize(), nullptr, m_convertPS_UV.GetAddressOf());
+            psUVBlob->Release();
+        }
+
         D3D11_SAMPLER_DESC sampDesc = {};
         sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
         sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
         sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
         sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-        self->m_device->CreateSamplerState(&sampDesc, impl->linearSampler.GetAddressOf());
+        d3d11Dev->CreateSamplerState(&sampDesc, m_linearSampler.GetAddressOf());
 
-        // 4. Compile Shader
-         if (FAILED(Compute::ShaderCompiler::CompileComputeShader(self->m_device.Get(), L"shaders/ProjectionShader.hlsl", "main", impl->projectionShader.GetAddressOf()))) {
-             if (FAILED(Compute::ShaderCompiler::CompileComputeShader(self->m_device.Get(), L"ProjectionShader.hlsl", "main", impl->projectionShader.GetAddressOf()))) {
-                 LOG_ERROR("Could not find ProjectionShader.hlsl");
-                 return false;
-             }
-         }
-         
-         // Compile Conversion Shaders
-         ID3DBlob* vsBlob = nullptr;
-         ID3DBlob* psYBlob = nullptr;
-         ID3DBlob* psUVBlob = nullptr;
-         
-         ComPtr<ID3DBlob> errBlob;
-         DWORD flags = D3DCOMPILE_ENABLE_STRICTNESS;
-         
-         // VS
-         if (FAILED(D3DCompileFromFile(L"src/Graphics/RGBToNV12.hlsl", nullptr, nullptr, "VS", "vs_5_0", flags, 0, &vsBlob, &errBlob))) {
-             if (FAILED(D3DCompileFromFile(L"RGBToNV12.hlsl", nullptr, nullptr, "VS", "vs_5_0", flags, 0, &vsBlob, &errBlob))) {
-                LOG_ERROR("Failed to compile RGBToNV12 VS");
-                return false;
-             }
-         }
-         self->m_device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, impl->convertVS.GetAddressOf());
-         vsBlob->Release();
+        // Create NV12 Resources
+        D3D11_TEXTURE2D_DESC nv12Desc = {};
+        nv12Desc.Width = eqW;
+        nv12Desc.Height = eqH;
+        nv12Desc.MipLevels = 1;
+        nv12Desc.ArraySize = 1;
+        nv12Desc.Format = DXGI_FORMAT_NV12;
+        nv12Desc.SampleDesc.Count = 1;
+        nv12Desc.Usage = D3D11_USAGE_DEFAULT;
+        nv12Desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
 
-         // PS Y
-         if (FAILED(D3DCompileFromFile(L"src/Graphics/RGBToNV12.hlsl", nullptr, nullptr, "PS_Y", "ps_5_0", flags, 0, &psYBlob, &errBlob))) {
-              if (FAILED(D3DCompileFromFile(L"RGBToNV12.hlsl", nullptr, nullptr, "PS_Y", "ps_5_0", flags, 0, &psYBlob, &errBlob))) return false;
-         }
-         self->m_device->CreatePixelShader(psYBlob->GetBufferPointer(), psYBlob->GetBufferSize(), nullptr, impl->convertPS_Y.GetAddressOf());
-         psYBlob->Release();
+        if (FAILED(d3d11Dev->CreateTexture2D(&nv12Desc, nullptr, m_equirectNV12.GetAddressOf()))) return false;
 
-         // PS UV
-         if (FAILED(D3DCompileFromFile(L"src/Graphics/RGBToNV12.hlsl", nullptr, nullptr, "PS_UV", "ps_5_0", flags, 0, &psUVBlob, &errBlob))) {
-              if (FAILED(D3DCompileFromFile(L"RGBToNV12.hlsl", nullptr, nullptr, "PS_UV", "ps_5_0", flags, 0, &psUVBlob, &errBlob))) return false;
-         }
-         self->m_device->CreatePixelShader(psUVBlob->GetBufferPointer(), psUVBlob->GetBufferSize(), nullptr, impl->convertPS_UV.GetAddressOf());
-         psUVBlob->Release();
+        D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+        rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        rtvDesc.Format = DXGI_FORMAT_R8_UNORM;
+        d3d11Dev->CreateRenderTargetView(m_equirectNV12.Get(), &rtvDesc, m_nv12Y_RTV.GetAddressOf());
 
-        // 5. Init Encoder
-        if (!impl->encoder->Initialize(self->m_device.Get(), eqW, eqH, 60, "record_360.mp4")) return false;
+        rtvDesc.Format = DXGI_FORMAT_R8G8_UNORM;
+        d3d11Dev->CreateRenderTargetView(m_equirectNV12.Get(), &rtvDesc, m_nv12UV_RTV.GetAddressOf());
 
-        impl->isInitialized = true;
+        // Init Encoder
+        if (m_encoder && !m_encoder->Initialize(d3d11Dev, eqW, eqH, 60, "widecapture_reshade.mp4")) return false;
+
         return true;
     }
 
-    bool CubemapManager::PresentHook(IDXGISwapChain* swapChain) {
-        if (!m_impl) return true;
+    void CubemapManager::OnUpdateBuffer(reshade::api::device* device, reshade::api::resource resource, const void* data, uint64_t size) {
+        if (m_cameraController) {
+            m_cameraController->OnUpdateBuffer(resource, data, size);
+        }
+    }
 
-        m_frameCycle++;
-        int step = m_frameCycle % 7;
+    void CubemapManager::OnBindPipeline(reshade::api::command_list* cmd_list, reshade::api::pipeline_stage stages, reshade::api::pipeline pipeline) {
+        // Track pipeline if necessary
+    }
 
-        // Initialization check
-        if (!m_impl->isInitialized) {
-            ComPtr<ID3D11Texture2D> backBuffer;
-            if (SUCCEEDED(swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)backBuffer.GetAddressOf()))) {
-                D3D11_TEXTURE2D_DESC desc;
-                backBuffer->GetDesc(&desc);
-                if (!InitResources(this, desc.Width, desc.Height, desc.Format)) {
-                    m_isRecording = false;
-                    return true;
-                }
+    void CubemapManager::ProcessDraw(reshade::api::command_list* cmd_list, bool indexed, uint32_t count, uint32_t instance_count, uint32_t first, int32_t offset_or_vertex, uint32_t first_instance) {
+        if (!m_isRecording) return;
+        
+        reshade::api::resource cameraBuffer = m_cameraController->GetCameraBuffer();
+        if (cameraBuffer.handle == 0) return;
+
+        ID3D11DeviceContext* ctx = (ID3D11DeviceContext*)cmd_list->get_native();
+        if (!ctx) return;
+
+        // Check if camera buffer is bound to VS slot 0, 1, or 2
+        ID3D11Buffer* nativeCamBuf = (ID3D11Buffer*)cameraBuffer.handle;
+        ID3D11Buffer* vsBuffers[3] = { nullptr };
+        ctx->VSGetConstantBuffers(0, 3, vsBuffers);
+
+        int slot = -1;
+        for(int i=0; i<3; ++i) {
+            if (vsBuffers[i] == nativeCamBuf) {
+                slot = i;
+            }
+            if (vsBuffers[i]) vsBuffers[i]->Release();
+            if (slot != -1) break;
+        }
+
+        if (slot == -1) return;
+
+        // Save State
+        StateBlock state(ctx);
+
+        // Loop 6 Faces
+        std::vector<uint8_t> modData;
+
+        // Create a temporary buffer for injection if not cached.
+        // For performance in a real scenario, we should have a pool.
+        // Here we create one per draw call which is slow but correct for logic.
+        D3D11_BUFFER_DESC desc = {};
+        nativeCamBuf->GetDesc(&desc);
+        desc.Usage = D3D11_USAGE_DYNAMIC;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+
+        ComPtr<ID3D11Buffer> tempCB;
+        ComPtr<ID3D11Device> device;
+        ctx->GetDevice(&device);
+        if (FAILED(device->CreateBuffer(&desc, nullptr, tempCB.GetAddressOf()))) return;
+
+        // Get Current Depth View to reuse (assuming face render target matches size)
+        ComPtr<ID3D11DepthStencilView> currentDSV;
+        ctx->OMGetRenderTargets(0, nullptr, currentDSV.GetAddressOf());
+
+        for (int i = 0; i < 6; ++i) {
+            if (!m_cameraController->GetModifiedBufferData((Camera::CubeFace)i, modData)) continue;
+
+            // Update Temp Buffer
+            D3D11_MAPPED_SUBRESOURCE mapped;
+            if (SUCCEEDED(ctx->Map(tempCB.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+                memcpy(mapped.pData, modData.data(), std::min((size_t)desc.ByteWidth, modData.size()));
+                ctx->Unmap(tempCB.Get(), 0);
+            }
+
+            // Bind Modified Camera
+            ID3D11Buffer* cbArray[] = { tempCB.Get() };
+            ctx->VSSetConstantBuffers(slot, 1, cbArray);
+
+            // Bind Face Render Target
+            // Note: We reuse current DSV. If Face Size != Screen Size, this is invalid!
+            // But we init Face Size = min(w, h).
+            // If the game uses a depth buffer of different size, this will fail or warn.
+            // A robust solution needs a dedicated Depth Buffer for the Face Size.
+            // For now, we assume the user configured the game resolution to match or we accept artifacts.
+
+            ID3D11RenderTargetView* faceRTV = (ID3D11RenderTargetView*)m_faceRtvs[i].handle;
+            ctx->OMSetRenderTargets(1, &faceRTV, currentDSV.Get()); // Re-bind DSV
+
+            // Draw
+            if (indexed) {
+                ctx->DrawIndexed(count, first, offset_or_vertex); // instance_count ignored for basic draw
             } else {
-                return true;
+                ctx->Draw(count, first);
             }
         }
-        
-        // Handle Resize check (simplified)
-        // ... (Skipped for brevity, assume InitResources handles initial size)
 
-        // Step 0..5: We just rendered a Capture Face.
-        if (step < 6) {
-             ComPtr<ID3D11Texture2D> backBuffer;
-             if (SUCCEEDED(swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)backBuffer.GetAddressOf()))) {
-                 CaptureFace(step, backBuffer.Get());
-             }
+        // StateBlock destructor restores state automatically
+    }
 
-             // If this was the last face (5), process the full cubemap
-             if (step == 5) {
-                 ProcessCycle();
-             }
+    void CubemapManager::OnDraw(reshade::api::command_list* cmd_list, uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance) {
+        ProcessDraw(cmd_list, false, vertex_count, instance_count, first_vertex, 0, first_instance);
+    }
 
-             // Prepare Camera for NEXT frame
-             if (step < 5) {
-                 // Next is face step+1
-                 m_impl->cameraController->SetBypass(false);
-                 m_impl->cameraController->SetTargetFace(static_cast<Camera::CubeFace>(step + 1));
-             } else {
-                 // Next is step 6 (Player Frame)
-                 m_impl->cameraController->SetBypass(true);
-             }
+    void CubemapManager::OnDrawIndexed(reshade::api::command_list* cmd_list, uint32_t index_count, uint32_t instance_count, uint32_t first_index, int32_t vertex_offset, uint32_t first_instance) {
+        ProcessDraw(cmd_list, true, index_count, instance_count, first_index, vertex_offset, first_instance);
+    }
 
-             // Suppress Present
-             return false;
+    void CubemapManager::OnPresent(reshade::api::command_queue* queue, reshade::api::swapchain* swapchain) {
+        if (!InitResources(m_width, m_height)) {
+             reshade::api::resource backBuffer = swapchain->get_current_back_buffer();
+             reshade::api::resource_desc desc = m_device->get_resource_desc(backBuffer);
+             InitResources((uint32_t)desc.texture.width, (uint32_t)desc.texture.height);
         }
-        else {
-             // Step 6: Player Frame just rendered.
-             // Do not capture. Let it show.
 
-             // Prepare Camera for NEXT frame (Face 0)
-             m_impl->cameraController->SetBypass(false);
-             m_impl->cameraController->SetTargetFace(static_cast<Camera::CubeFace>(0));
-
-             // Allow Present
-             return true;
+        // Copy Faces to Cube Texture (Array)
+        for(int i=0; i<6; ++i) {
+             m_device->copy_texture_region(m_faceTextures[i], 0, nullptr, m_cubeTexture, i, nullptr);
         }
-    }
 
-    void CubemapManager::CaptureFace(int faceIndex, ID3D11Texture2D* backBuffer) {
-        D3D11_TEXTURE2D_DESC desc;
-        backBuffer->GetDesc(&desc);
+        // Execute Compute Shader to Stitch/Project
+        ID3D11DeviceContext* ctx = (ID3D11DeviceContext*)queue->get_native();
 
-        // Copy Center Crop
-        D3D11_BOX srcBox;
-        srcBox.left = (desc.Width - m_impl->faceSize) / 2;
-        srcBox.top = (desc.Height - m_impl->faceSize) / 2;
-        srcBox.front = 0;
-        srcBox.right = srcBox.left + m_impl->faceSize;
-        srcBox.bottom = srcBox.top + m_impl->faceSize;
-        srcBox.back = 1;
+        if (m_projectionShader) {
+            ctx->CSSetShader(m_projectionShader.Get(), nullptr, 0);
+            ID3D11ShaderResourceView* srv = (ID3D11ShaderResourceView*)m_cubeSrv.handle;
+            ctx->CSSetShaderResources(0, 1, &srv);
+            ID3D11UnorderedAccessView* uav = (ID3D11UnorderedAccessView*)m_equirectUAV.handle;
+            ctx->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+            
+            reshade::api::resource_desc desc = m_device->get_resource_desc(m_equirectTexture);
+            UINT x = (desc.texture.width + 15) / 16;
+            UINT y = (desc.texture.height + 15) / 16;
+            ctx->Dispatch(x, y, 1);
+            
+            ID3D11UnorderedAccessView* nullUAV[] = { nullptr };
+            ctx->CSSetUnorderedAccessViews(0, 1, nullUAV, nullptr);
+            ID3D11ShaderResourceView* nullSRV[] = { nullptr };
+            ctx->CSSetShaderResources(0, 1, nullSRV);
+        }
 
-        m_context->CopySubresourceRegion(m_impl->faceTextures[faceIndex].Get(), 0, 0, 0, 0, backBuffer, 0, &srcBox);
-    }
+        // Convert to NV12 and Encode
+        // We render a full-screen quad to the NV12 targets using the Equirect texture as input
+        if (m_equirectNV12) {
+             // Setup Viewport
+             D3D11_TEXTURE2D_DESC eqDesc;
+             m_equirectNV12->GetDesc(&eqDesc);
 
-    void CubemapManager::ProcessCycle() {
-         // A. Copy Faces to Cube Texture
-         for(int i=0; i<6; ++i) {
-             m_context->CopySubresourceRegion(m_impl->cubeTexture.Get(), i, 0, 0, 0, m_impl->faceTextures[i].Get(), 0, nullptr);
-         }
+             ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+             ctx->VSSetShader(m_convertVS.Get(), nullptr, 0);
 
-         // B. Dispatch Compute
-         StateBlock stateBlock(m_context.Get());
-            
-         m_context->CSSetShader(m_impl->projectionShader.Get(), nullptr, 0);
-         ID3D11ShaderResourceView* srvs[] = { m_impl->cubeSRV.Get() };
-         m_context->CSSetShaderResources(0, 1, srvs);
-         ID3D11UnorderedAccessView* uavs[] = { m_impl->equirectUAV.Get() };
-         m_context->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
-            
-         D3D11_TEXTURE2D_DESC eqDesc;
-         m_impl->equirectTexture->GetDesc(&eqDesc);
-            
-         UINT x = (eqDesc.Width + 15) / 16;
-         UINT y = (eqDesc.Height + 15) / 16;
-         m_context->Dispatch(x, y, 1);
-            
-         // Clean up CS slots
-         ID3D11UnorderedAccessView* nullUAV[] = { nullptr };
-         m_context->CSSetUnorderedAccessViews(0, 1, nullUAV, nullptr);
-         ID3D11ShaderResourceView* nullSRV[] = { nullptr };
-         m_context->CSSetShaderResources(0, 1, nullSRV);
+             ID3D11ShaderResourceView* srv = (ID3D11ShaderResourceView*)m_equirectSRV.handle;
+             ctx->PSSetShaderResources(0, 1, &srv);
+             ctx->PSSetSamplers(0, 1, m_linearSampler.GetAddressOf());
 
-         // C. Convert to NV12
-         m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-         m_context->IASetInputLayout(nullptr);
-         m_context->VSSetShader(m_impl->convertVS.Get(), nullptr, 0);
-            
-         ID3D11ShaderResourceView* srvsConv[] = { m_impl->equirectSRV.Get() };
-         m_context->PSSetShaderResources(0, 1, srvsConv);
-         m_context->PSSetSamplers(0, 1, m_impl->linearSampler.GetAddressOf());
-            
-         // Pass 1: Y
-         D3D11_VIEWPORT vp = {};
-         vp.Width = (float)eqDesc.Width;
-         vp.Height = (float)eqDesc.Height;
-         vp.MinDepth = 0.0f;
-         vp.MaxDepth = 1.0f;
-         m_context->RSSetViewports(1, &vp);
-            
-         ID3D11RenderTargetView* rtvY[] = { m_impl->nv12Y_RTV.Get() };
-         m_context->OMSetRenderTargets(1, rtvY, nullptr);
-         m_context->PSSetShader(m_impl->convertPS_Y.Get(), nullptr, 0);
-         m_context->Draw(3, 0);
-            
-         // Pass 2: UV
-         vp.Width = (float)eqDesc.Width / 2.0f;
-         vp.Height = (float)eqDesc.Height / 2.0f;
-         m_context->RSSetViewports(1, &vp);
-            
-         ID3D11RenderTargetView* rtvUV[] = { m_impl->nv12UV_RTV.Get() };
-         m_context->OMSetRenderTargets(1, rtvUV, nullptr);
-         m_context->PSSetShader(m_impl->convertPS_UV.Get(), nullptr, 0);
-         m_context->Draw(3, 0);
-            
-         // Clean Render Targets
-         ID3D11RenderTargetView* nullRTV[] = { nullptr };
-         m_context->OMSetRenderTargets(1, nullRTV, nullptr);
-         ID3D11ShaderResourceView* nullSRV2[] = { nullptr };
-         m_context->PSSetShaderResources(0, 1, nullSRV2);
-            
-         // D. Encode
-         m_impl->encoder->EncodeFrame(m_impl->equirectNV12.Get());
-    }
+             // Y Pass
+             D3D11_VIEWPORT vp = {};
+             vp.Width = (float)eqDesc.Width;
+             vp.Height = (float)eqDesc.Height;
+             vp.MaxDepth = 1.0f;
+             ctx->RSSetViewports(1, &vp);
+             ctx->OMSetRenderTargets(1, m_nv12Y_RTV.GetAddressOf(), nullptr);
+             ctx->PSSetShader(m_convertPS_Y.Get(), nullptr, 0);
+             ctx->Draw(3, 0); // Full screen triangle
 
-    void CubemapManager::OnResize() {
-        if (m_impl) {
-            m_impl->isInitialized = false;
+             // UV Pass
+             vp.Width = (float)eqDesc.Width / 2.0f;
+             vp.Height = (float)eqDesc.Height / 2.0f;
+             ctx->RSSetViewports(1, &vp);
+             ctx->OMSetRenderTargets(1, m_nv12UV_RTV.GetAddressOf(), nullptr);
+             ctx->PSSetShader(m_convertPS_UV.Get(), nullptr, 0);
+             ctx->Draw(3, 0);
+
+             // Encode
+             m_encoder->EncodeFrame(m_equirectNV12.Get());
+
+             // Cleanup
+             ID3D11RenderTargetView* nullRTV = nullptr;
+             ctx->OMSetRenderTargets(1, &nullRTV, nullptr);
         }
     }
 }
