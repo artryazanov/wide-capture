@@ -4,16 +4,14 @@
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20DirectX%2011-lightgrey.svg)
 ![Language](https://img.shields.io/badge/language-C%2B%2B17-blue.svg)
 
-**WideCapture** is a high-performance, AAA-grade solution for capturing 360-degree (equirectangular) gameplay video from DirectX 11 applications. 
-
-Designed for reverse engineers and graphics programmers, it utilizes **DLL Injection**, **API Hooking**, **Compute Shaders**, and **Zero-Copy Hardware Encoding** to record panoramic video without accessing the game's source code.
+**WideCapture** is an experimental utility designed to capture 360-degree (equirectangular) gameplay video from DirectX 11 applications. It utilizes **DLL Injection**, **API Hooking**, **Compute Shaders**, and **Zero-Copy Hardware Encoding** to achieve panoramic recording without requiring access to the game's source code.
 
 > [!WARNING]
-> **Development Status**: This project is currently in a **Proof of Concept / Alpha** stage.
-> *   **Implemented**: Basic DLL injection mechanism, DirectX 11 hooking infrastructure (MinHook), and foundational FFmpeg integration.
-> *   **Work in Progress**: Reliable camera hijacking heuristics, correct cubemap rendering/stitching, and stable hardware encoding.
+> **Development Status: Proof of Concept**
 >
-> The features described below represent the **target architecture and goals** of the project. Expect crashes, visual artifacts, and incomplete functionality in the current version.
+> This project is currently in the **Alpha** stage. While the core infrastructure (injection, hooking, and FFmpeg integration) is implemented, advanced features like reliable camera control and seamless stitching are still in development.
+>
+> The documentation below outlines the **technical goals and architecture**. Please anticipate instability, visual artifacts, and API limitations in the current build.
 
 ## 🚀 Key Features
 
